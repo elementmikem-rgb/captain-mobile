@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "captain-mobile",
+    "name": "Captain",
     "slug": "captain-mobile",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -20,10 +20,18 @@
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
-      "edgeToEdgeEnabled": true
+      "edgeToEdgeEnabled": true,
+      "permissions": [
+        "android.permission.RECORD_AUDIO",
+        "android.permission.INTERNET"
+      ],
+      "package": "com.callova.captain"
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "plugins": [
+      "expo-speech-recognition"
+    ]
   }
 }
