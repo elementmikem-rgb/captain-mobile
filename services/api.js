@@ -14,7 +14,7 @@ async function getClient() {
     await AsyncStorage.removeItem('captain_api_url');
   }
   url = url || DEFAULT_URL;
-  const key = await AsyncStorage.getItem('captain_api_key') || 'default-key-change-me';
+  const key = await AsyncStorage.getItem('captain_api_key') || 'Ml2znOnV_iylluaiXn-9Me8JIHVP0eu95yw-V6koqlI';
   client = axios.create({
     baseURL: url,
     timeout: 45000,
