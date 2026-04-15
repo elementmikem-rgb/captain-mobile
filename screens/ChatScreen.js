@@ -7,6 +7,9 @@ import {
   Pressable,
   ActivityIndicator,
   Alert,
+  TextInput,
+  KeyboardAvoidingView,
+  Platform,
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -30,6 +33,8 @@ export default function ChatScreen({ navigation }) {
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [lastModelUsed, setLastModelUsed] = useState('');
   const [transcript, setTranscript] = useState('');
+  const [textInput, setTextInput] = useState('');
+  const [showKeyboard, setShowKeyboard] = useState(false);
   const scrollViewRef = useRef(null);
 
   useEffect(() => {
@@ -165,6 +170,13 @@ export default function ChatScreen({ navigation }) {
     }
   }, [messages]);
 
+  const handleTextSend = useCallback(() => {
+    const text = textInput.trim();
+    if (!text || isProcessing) return;
+    setTextInput('');
+    handleSend(text);
+  }, [textInput, isProcessing, handleSend]);
+
   const handleClear = useCallback(() => {
     Alert.alert('Clear History', 'Clear all conversation history?', [
       { text: 'Cancel', style: 'cancel' },
@@ -195,7 +207,7 @@ export default function ChatScreen({ navigation }) {
     : '#6c9cff';
 
   return (
-    <View style={styles.container}>
+    <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <View style={styles.header}>
         <View>
           <Text style={styles.title}>Captain</Text>
@@ -219,7 +231,7 @@ export default function ChatScreen({ navigation }) {
               <MaterialIcons name="assistant" size={48} color="#6c9cff" />
             </View>
             <Text style={styles.emptyTitle}>Hey Mike</Text>
-            <Text style={styles.emptyText}>Tap the mic to start a conversation</Text>
+            <Text style={styles.emptyText}>Speak or type to start a conversation</Text>
             <Pressable onPress={handleBriefing} disabled={isProcessing} style={styles.emptyBriefingBtn}>
               <MaterialIcons name="wb-sunny" size={18} color="#ffb347" />
               <Text style={styles.emptyBriefingText}>Get your briefing</Text>
@@ -255,34 +267,59 @@ export default function ChatScreen({ navigation }) {
       ) : null}
 
       <View style={styles.controls}>
-        <Text style={styles.statusText}>{statusText}</Text>
-
-        <View style={styles.controlRow}>
-          <Pressable onPress={handleBriefing} disabled={isProcessing} style={styles.sideBtn}>
-            <MaterialIcons name="wb-sunny" size={22} color="#ffb347" />
-          </Pressable>
-
-          <Pressable
-            onPress={handleMicPress}
-            style={[styles.micButton, { backgroundColor: micBg }]}
-          >
-            <MaterialIcons
-              name={isSpeaking ? 'stop' : isListening ? 'mic' : 'mic-none'}
-              size={36}
-              color="#fff"
-            />
-          </Pressable>
-
-          {messages.length > 0 ? (
-            <Pressable onPress={handleClear} style={styles.sideBtn}>
-              <MaterialIcons name="delete-outline" size={22} color="#666" />
+        {showKeyboard ? (
+          <View style={styles.inputRow}>
+            <Pressable onPress={() => setShowKeyboard(false)} style={styles.inputSideBtn}>
+              <MaterialIcons name="mic" size={22} color="#6c9cff" />
             </Pressable>
-          ) : (
-            <View style={styles.sideBtn} />
-          )}
-        </View>
+            <TextInput
+              style={styles.textInput}
+              placeholder="Message Captain..."
+              placeholderTextColor="#555"
+              value={textInput}
+              onChangeText={setTextInput}
+              onSubmitEditing={handleTextSend}
+              returnKeyType="send"
+              autoFocus
+              editable={!isProcessing}
+            />
+            <Pressable onPress={handleTextSend} disabled={!textInput.trim() || isProcessing} style={styles.sendBtn}>
+              <MaterialIcons name="send" size={20} color={textInput.trim() ? '#6c9cff' : '#333'} />
+            </Pressable>
+          </View>
+        ) : (
+          <>
+            <Text style={styles.statusText}>{statusText}</Text>
+            <View style={styles.controlRow}>
+              <Pressable onPress={handleBriefing} disabled={isProcessing} style={styles.sideBtn}>
+                <MaterialIcons name="wb-sunny" size={22} color="#ffb347" />
+              </Pressable>
+
+              <Pressable
+                onPress={handleMicPress}
+                style={[styles.micButton, { backgroundColor: micBg }]}
+              >
+                <MaterialIcons
+                  name={isSpeaking ? 'stop' : isListening ? 'mic' : 'mic-none'}
+                  size={36}
+                  color="#fff"
+                />
+              </Pressable>
+
+              <Pressable onPress={() => setShowKeyboard(true)} style={styles.sideBtn}>
+                <MaterialIcons name="keyboard" size={22} color="#666" />
+              </Pressable>
+            </View>
+            {messages.length > 0 && (
+              <Pressable onPress={handleClear} style={styles.clearBtn}>
+                <MaterialIcons name="delete-outline" size={14} color="#555" />
+                <Text style={styles.clearText}>Clear</Text>
+              </Pressable>
+            )}
+          </>
+        )}
       </View>
-    </View>
+    </KeyboardAvoidingView>
   );
 }
 
@@ -380,6 +417,50 @@ const styles = StyleSheet.create({
     height: 44,
     borderRadius: 22,
     backgroundColor: 'rgba(255,255,255,0.05)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  clearBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginTop: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 8,
+  },
+  clearText: { color: '#555', fontSize: 12 },
+  inputRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingBottom: 24,
+    paddingTop: 12,
+  },
+  inputSideBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(108, 156, 255, 0.1)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  textInput: {
+    flex: 1,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#151b2b',
+    paddingHorizontal: 18,
+    color: '#e8e8e8',
+    fontSize: 15,
+    borderWidth: 1,
+    borderColor: '#1e293b',
+  },
+  sendBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     justifyContent: 'center',
     alignItems: 'center',
   },
