@@ -136,18 +136,26 @@ export default function ChatScreen({ navigation }) {
       );
 
       setIsProcessing(false);
-      setIsSpeaking(true);
-      await speak(fullText);
-      setIsSpeaking(false);
+      const savedSettings = await AsyncStorage.getItem('captain_settings');
+      const voiceOn = savedSettings ? JSON.parse(savedSettings).voiceEnabled !== false : true;
+      if (voiceOn) {
+        setIsSpeaking(true);
+        await speak(fullText);
+        setIsSpeaking(false);
+      }
     } catch (error) {
       try {
         const data = await sendMessage(userText);
         setMessages(prev => prev.map(m => m.id === captainMsgId ? { ...m, text: data.response, modelUsed: data.model_used, complexity: data.complexity } : m));
         setLastModelUsed(data.model_used || '');
         setIsProcessing(false);
-        setIsSpeaking(true);
-        await speak(data.response);
-        setIsSpeaking(false);
+        const s = await AsyncStorage.getItem('captain_settings');
+        const von = s ? JSON.parse(s).voiceEnabled !== false : true;
+        if (von) {
+          setIsSpeaking(true);
+          await speak(data.response);
+          setIsSpeaking(false);
+        }
       } catch (fallbackError) {
         Alert.alert('Error', fallbackError.message);
         setMessages(prev => prev.filter(m => m.id !== captainMsgId));
