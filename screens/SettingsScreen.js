@@ -10,6 +10,7 @@ import {
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as Updates from 'expo-updates';
 import { testConnection, resetClient } from '../services/api';
 
 export default function SettingsScreen() {
@@ -18,6 +19,8 @@ export default function SettingsScreen() {
   const [showApiKey, setShowApiKey] = useState(false);
   const [testing, setTesting] = useState(false);
   const [status, setStatus] = useState('');
+  const [updating, setUpdating] = useState(false);
+  const [updateStatus, setUpdateStatus] = useState('');
 
   useEffect(() => {
     (async () => {
@@ -38,6 +41,26 @@ export default function SettingsScreen() {
       Alert.alert('Saved', 'Settings updated.');
     } catch (error) {
       Alert.alert('Error', 'Failed to save settings.');
+    }
+  };
+
+  const handleUpdate = async () => {
+    setUpdating(true);
+    setUpdateStatus('Checking...');
+    try {
+      const check = await Updates.checkForUpdateAsync();
+      if (!check.isAvailable) {
+        setUpdateStatus('Up to date');
+        setUpdating(false);
+        return;
+      }
+      setUpdateStatus('Downloading...');
+      await Updates.fetchUpdateAsync();
+      setUpdateStatus('Restarting...');
+      await Updates.reloadAsync();
+    } catch (e) {
+      setUpdateStatus('Failed: ' + e.message);
+      setUpdating(false);
     }
   };
 
@@ -113,6 +136,19 @@ export default function SettingsScreen() {
               {status === 'connected' ? 'Connected to Captain' : 'Connection failed'}
             </Text>
           </View>
+        ) : null}
+      </View>
+
+      <View style={styles.section}>
+        <Text style={styles.sectionTitle}>Updates</Text>
+        <Pressable onPress={handleUpdate} disabled={updating} style={styles.updateBtn}>
+          <MaterialIcons name="system-update" size={18} color="#6c9cff" />
+          <Text style={styles.updateText}>{updating ? updateStatus : 'Check for Updates'}</Text>
+        </Pressable>
+        {!updating && updateStatus ? (
+          <Text style={[styles.updateResult, updateStatus === 'Up to date' ? styles.statusOk : styles.statusFail]}>
+            {updateStatus}
+          </Text>
         ) : null}
       </View>
 
@@ -214,4 +250,17 @@ const styles = StyleSheet.create({
   },
   aboutLabel: { fontSize: 14, color: '#888' },
   aboutValue: { fontSize: 14, color: '#e8e8e8' },
+  updateBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 14,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#6c9cff30',
+    backgroundColor: '#6c9cff10',
+  },
+  updateText: { color: '#6c9cff', fontWeight: '600', fontSize: 14 },
+  updateResult: { textAlign: 'center', marginTop: 10, fontSize: 13, fontWeight: '500' },
 });
