@@ -13,7 +13,11 @@
       "backgroundColor": "#ffffff"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSSpeechRecognitionUsageDescription": "Allow $(PRODUCT_NAME) to use speech recognition.",
+        "NSMicrophoneUsageDescription": "Allow $(PRODUCT_NAME) to use the microphone."
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -23,15 +27,31 @@
       "edgeToEdgeEnabled": true,
       "permissions": [
         "android.permission.RECORD_AUDIO",
-        "android.permission.INTERNET"
+        "android.permission.INTERNET",
+        "android.permission.CHANGE_NETWORK_STATE"
       ],
-      "package": "com.callova.captain"
+      "package": "com.callova.captain",
+      "usesCleartextTraffic": true
     },
     "web": {
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
-      "expo-speech-recognition"
-    ]
+      "expo-speech-recognition",
+      "expo-dev-client",
+      "expo-font"
+    ],
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/8193a1ea-93f1-4fe5-8246-b8048df455b7"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "8193a1ea-93f1-4fe5-8246-b8048df455b7"
+      }
+    },
+    "owner": "mikemurrzz"
   }
 }

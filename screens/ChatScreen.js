@@ -44,7 +44,6 @@ export default function ChatScreen({ navigation }) {
           [{ text: 'Settings', onPress: () => navigation.navigate('Settings') }]
         );
       }
-      // Register push token
       try {
         const Notifications = require('expo-notifications');
         const { status } = await Notifications.requestPermissionsAsync();
@@ -168,7 +167,7 @@ export default function ChatScreen({ navigation }) {
 
   const handleClear = useCallback(() => {
     Alert.alert('Clear History', 'Clear all conversation history?', [
-      { text: 'Cancel' },
+      { text: 'Cancel', style: 'cancel' },
       {
         text: 'Clear',
         style: 'destructive',
@@ -184,25 +183,28 @@ export default function ChatScreen({ navigation }) {
   const statusText = isListening
     ? 'Listening...'
     : isProcessing
-    ? 'Processing...'
+    ? 'Thinking...'
     : isSpeaking
     ? 'Speaking...'
-    : 'Ready';
+    : 'Tap to speak';
 
-  const micColor = isListening
-    ? '#ff9800'
+  const micBg = isListening
+    ? '#ff6b35'
     : isSpeaking
-    ? '#9C27B0'
-    : isProcessing
-    ? '#2196F3'
-    : '#2196F3';
+    ? '#8b5cf6'
+    : '#6c9cff';
 
   return (
     <View style={styles.container}>
       <View style={styles.header}>
-        <Text style={styles.title}>Captain</Text>
+        <View>
+          <Text style={styles.title}>Captain</Text>
+          {lastModelUsed ? (
+            <Text style={styles.subtitle}>{lastModelUsed}</Text>
+          ) : null}
+        </View>
         <Pressable onPress={() => navigation.navigate('Settings')} style={styles.settingsBtn}>
-          <MaterialIcons name="settings" size={24} color="#2196F3" />
+          <MaterialIcons name="settings" size={22} color="#6c9cff" />
         </Pressable>
       </View>
 
@@ -213,8 +215,15 @@ export default function ChatScreen({ navigation }) {
       >
         {messages.length === 0 ? (
           <View style={styles.emptyState}>
-            <MaterialIcons name="mic" size={64} color="#ccc" />
-            <Text style={styles.emptyText}>Tap the mic to start talking to Captain</Text>
+            <View style={styles.emptyIcon}>
+              <MaterialIcons name="assistant" size={48} color="#6c9cff" />
+            </View>
+            <Text style={styles.emptyTitle}>Hey Mike</Text>
+            <Text style={styles.emptyText}>Tap the mic to start a conversation</Text>
+            <Pressable onPress={handleBriefing} disabled={isProcessing} style={styles.emptyBriefingBtn}>
+              <MaterialIcons name="wb-sunny" size={18} color="#ffb347" />
+              <Text style={styles.emptyBriefingText}>Get your briefing</Text>
+            </Pressable>
           </View>
         ) : (
           messages.map((msg) => (
@@ -231,45 +240,45 @@ export default function ChatScreen({ navigation }) {
         )}
         {isProcessing && (
           <View style={styles.thinkingRow}>
-            <ActivityIndicator size="small" color="#2196F3" />
-            <Text style={styles.thinkingText}>Captain is thinking...</Text>
+            <View style={styles.thinkingDot} />
+            <View style={[styles.thinkingDot, { opacity: 0.6 }]} />
+            <View style={[styles.thinkingDot, { opacity: 0.3 }]} />
           </View>
         )}
       </ScrollView>
 
       {transcript ? (
         <View style={styles.transcriptBar}>
+          <MaterialIcons name="mic" size={14} color="#ff6b35" />
           <Text style={styles.transcriptText}>{transcript}</Text>
         </View>
       ) : null}
 
       <View style={styles.controls}>
-        <Text style={[styles.statusText, { color: micColor }]}>{statusText}</Text>
+        <Text style={styles.statusText}>{statusText}</Text>
 
-        <Pressable
-          onPress={handleMicPress}
-          style={[styles.micButton, { backgroundColor: micColor }]}
-        >
-          <MaterialIcons
-            name={isSpeaking ? 'stop' : 'mic'}
-            size={32}
-            color="white"
-          />
-        </Pressable>
-
-        {lastModelUsed ? (
-          <Text style={styles.modelText}>Using {lastModelUsed}</Text>
-        ) : null}
-
-        <View style={styles.actionRow}>
-          <Pressable onPress={handleBriefing} disabled={isProcessing} style={styles.briefingBtn}>
-            <MaterialIcons name="wb-sunny" size={16} color="#ff9800" />
-            <Text style={styles.briefingText}>Briefing</Text>
+        <View style={styles.controlRow}>
+          <Pressable onPress={handleBriefing} disabled={isProcessing} style={styles.sideBtn}>
+            <MaterialIcons name="wb-sunny" size={22} color="#ffb347" />
           </Pressable>
-          {messages.length > 0 && (
-            <Pressable onPress={handleClear} style={styles.clearBtn}>
-              <Text style={styles.clearText}>Clear History</Text>
+
+          <Pressable
+            onPress={handleMicPress}
+            style={[styles.micButton, { backgroundColor: micBg }]}
+          >
+            <MaterialIcons
+              name={isSpeaking ? 'stop' : isListening ? 'mic' : 'mic-none'}
+              size={36}
+              color="#fff"
+            />
+          </Pressable>
+
+          {messages.length > 0 ? (
+            <Pressable onPress={handleClear} style={styles.sideBtn}>
+              <MaterialIcons name="delete-outline" size={22} color="#666" />
             </Pressable>
+          ) : (
+            <View style={styles.sideBtn} />
           )}
         </View>
       </View>
@@ -278,52 +287,100 @@ export default function ChatScreen({ navigation }) {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#fff' },
+  container: { flex: 1, backgroundColor: '#0a0e17' },
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: '#eee',
+    paddingHorizontal: 20,
+    paddingTop: 56,
+    paddingBottom: 16,
   },
-  title: { fontSize: 20, fontWeight: 'bold', color: '#333' },
+  title: { fontSize: 24, fontWeight: '700', color: '#fff', letterSpacing: -0.5 },
+  subtitle: { fontSize: 12, color: '#6c9cff', marginTop: 2 },
   settingsBtn: { padding: 8 },
   conversation: { flex: 1 },
-  conversationContent: { paddingVertical: 8 },
-  emptyState: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingTop: 120 },
-  emptyText: { marginTop: 16, fontSize: 16, color: '#999', textAlign: 'center' },
-  thinkingRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 8 },
-  thinkingText: { marginLeft: 8, color: '#666', fontStyle: 'italic' },
-  transcriptBar: {
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    backgroundColor: '#fff3e0',
-    borderTopWidth: 1,
-    borderTopColor: '#ffe0b2',
-  },
-  transcriptText: { color: '#e65100', fontStyle: 'italic' },
-  controls: {
-    alignItems: 'center',
-    paddingBottom: 24,
-    paddingTop: 16,
-    borderTopWidth: 1,
-    borderTopColor: '#eee',
-  },
-  statusText: { fontSize: 14, marginBottom: 12, fontWeight: '600' },
-  micButton: {
+  conversationContent: { paddingVertical: 8, flexGrow: 1 },
+  emptyState: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 40 },
+  emptyIcon: {
     width: 80,
     height: 80,
     borderRadius: 40,
+    backgroundColor: 'rgba(108, 156, 255, 0.1)',
     justifyContent: 'center',
     alignItems: 'center',
-    elevation: 4,
+    marginBottom: 20,
   },
-  modelText: { marginTop: 8, fontSize: 12, color: '#999', fontStyle: 'italic' },
-  actionRow: { flexDirection: 'row', gap: 12, marginTop: 12 },
-  briefingBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 16, paddingVertical: 8, backgroundColor: '#fff3e0', borderRadius: 8 },
-  briefingText: { color: '#e65100', fontSize: 14, fontWeight: '600' },
-  clearBtn: { paddingHorizontal: 16, paddingVertical: 8, backgroundColor: '#f5f5f5', borderRadius: 8 },
-  clearText: { color: '#666', fontSize: 14 },
+  emptyTitle: { fontSize: 22, fontWeight: '600', color: '#fff', marginBottom: 8 },
+  emptyText: { fontSize: 15, color: '#666', textAlign: 'center' },
+  emptyBriefingBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 24,
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    backgroundColor: 'rgba(255, 179, 71, 0.1)',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 179, 71, 0.2)',
+  },
+  emptyBriefingText: { fontSize: 14, color: '#ffb347', fontWeight: '500' },
+  thinkingRow: {
+    flexDirection: 'row',
+    gap: 6,
+    paddingHorizontal: 24,
+    paddingVertical: 16,
+  },
+  thinkingDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#6c9cff',
+  },
+  transcriptBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginHorizontal: 16,
+    marginBottom: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    backgroundColor: 'rgba(255, 107, 53, 0.08)',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 107, 53, 0.15)',
+  },
+  transcriptText: { color: '#ff6b35', fontSize: 14, flex: 1 },
+  controls: {
+    alignItems: 'center',
+    paddingBottom: 36,
+    paddingTop: 16,
+  },
+  statusText: { fontSize: 13, color: '#555', marginBottom: 16, fontWeight: '500' },
+  controlRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 24,
+  },
+  micButton: {
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    justifyContent: 'center',
+    alignItems: 'center',
+    elevation: 8,
+    shadowColor: '#6c9cff',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 12,
+  },
+  sideBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
 });

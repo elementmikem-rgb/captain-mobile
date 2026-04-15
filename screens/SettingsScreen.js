@@ -8,12 +8,14 @@ import {
   Alert,
   ScrollView,
 } from 'react-native';
+import { MaterialIcons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { testConnection, resetClient } from '../services/api';
 
 export default function SettingsScreen() {
-  const [apiUrl, setApiUrl] = useState('http://192.168.1.100:5000');
-  const [apiKey, setApiKey] = useState('default-key-change-me');
+  const [apiUrl, setApiUrl] = useState('https://callova.live/captain');
+  const [apiKey, setApiKey] = useState('');
+  const [showApiKey, setShowApiKey] = useState(false);
   const [testing, setTesting] = useState(false);
   const [status, setStatus] = useState('');
 
@@ -33,7 +35,7 @@ export default function SettingsScreen() {
         ['captain_api_key', apiKey],
       ]);
       resetClient();
-      Alert.alert('Saved', 'Settings saved successfully.');
+      Alert.alert('Saved', 'Settings updated.');
     } catch (error) {
       Alert.alert('Error', 'Failed to save settings.');
     }
@@ -49,9 +51,9 @@ export default function SettingsScreen() {
       ]);
       resetClient();
       const ok = await testConnection();
-      setStatus(ok ? 'Connected' : 'Failed');
+      setStatus(ok ? 'connected' : 'failed');
     } catch {
-      setStatus('Failed');
+      setStatus('failed');
     } finally {
       setTesting(false);
     }
@@ -60,77 +62,156 @@ export default function SettingsScreen() {
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
       <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Backend Configuration</Text>
+        <Text style={styles.sectionTitle}>Connection</Text>
 
-        <Text style={styles.label}>Backend URL</Text>
+        <Text style={styles.label}>Server URL</Text>
         <TextInput
           style={styles.input}
-          placeholder="http://192.168.1.100:5000"
+          placeholder="https://callova.live/captain"
+          placeholderTextColor="#444"
           value={apiUrl}
           onChangeText={setApiUrl}
           autoCapitalize="none"
           autoCorrect={false}
         />
 
-        <Text style={styles.label}>API Key</Text>
+        <View style={styles.keyHeader}>
+          <Text style={styles.label}>API Key</Text>
+          <Pressable onPress={() => setShowApiKey(!showApiKey)} style={styles.toggleBtn}>
+            <MaterialIcons name={showApiKey ? 'visibility-off' : 'visibility'} size={16} color="#6c9cff" />
+          </Pressable>
+        </View>
         <TextInput
           style={styles.input}
-          placeholder="your-api-key"
+          placeholder="Paste your API key"
+          placeholderTextColor="#444"
           value={apiKey}
           onChangeText={setApiKey}
-          secureTextEntry
+          secureTextEntry={!showApiKey}
           autoCapitalize="none"
           autoCorrect={false}
         />
 
         <View style={styles.buttonRow}>
-          <Pressable onPress={handleTest} disabled={testing} style={[styles.button, styles.testBtn]}>
-            <Text style={styles.buttonText}>{testing ? 'Testing...' : 'Test Connection'}</Text>
+          <Pressable onPress={handleTest} disabled={testing} style={styles.testBtn}>
+            <MaterialIcons name="wifi-tethering" size={16} color="#6c9cff" />
+            <Text style={styles.testText}>{testing ? 'Testing...' : 'Test'}</Text>
           </Pressable>
-          <Pressable onPress={handleSave} style={[styles.button, styles.saveBtn]}>
-            <Text style={styles.buttonText}>Save</Text>
+          <Pressable onPress={handleSave} style={styles.saveBtn}>
+            <Text style={styles.saveText}>Save</Text>
           </Pressable>
         </View>
 
         {status ? (
-          <Text style={[styles.status, status === 'Connected' ? styles.ok : styles.fail]}>
-            {status === 'Connected' ? 'Connected to Captain backend' : 'Could not connect. Check URL and ensure Captain is running.'}
-          </Text>
+          <View style={[styles.statusBar, status === 'connected' ? styles.statusOk : styles.statusFail]}>
+            <MaterialIcons
+              name={status === 'connected' ? 'check-circle' : 'error'}
+              size={16}
+              color={status === 'connected' ? '#4ade80' : '#f87171'}
+            />
+            <Text style={[styles.statusText, { color: status === 'connected' ? '#4ade80' : '#f87171' }]}>
+              {status === 'connected' ? 'Connected to Captain' : 'Connection failed'}
+            </Text>
+          </View>
         ) : null}
       </View>
 
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>About</Text>
-        <Text style={styles.info}>Captain Voice Assistant v1.0.0</Text>
-        <Text style={styles.info}>AI assistant powered by Ollama (gemma4) and Claude</Text>
+        <View style={styles.aboutRow}>
+          <Text style={styles.aboutLabel}>Version</Text>
+          <Text style={styles.aboutValue}>2.0.0</Text>
+        </View>
+        <View style={styles.aboutRow}>
+          <Text style={styles.aboutLabel}>AI Models</Text>
+          <Text style={styles.aboutValue}>Claude + Ollama</Text>
+        </View>
+        <View style={styles.aboutRow}>
+          <Text style={styles.aboutLabel}>Routing</Text>
+          <Text style={styles.aboutValue}>Auto (complexity-based)</Text>
+        </View>
       </View>
     </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#fff' },
-  content: { padding: 16 },
-  section: { marginBottom: 24 },
-  sectionTitle: { fontSize: 16, fontWeight: 'bold', marginBottom: 12, color: '#333' },
-  label: { fontSize: 14, fontWeight: '600', marginBottom: 6, color: '#666' },
+  container: { flex: 1, backgroundColor: '#0a0e17' },
+  content: { padding: 20 },
+  section: {
+    marginBottom: 32,
+    backgroundColor: '#111827',
+    borderRadius: 16,
+    padding: 20,
+  },
+  sectionTitle: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#6c9cff',
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+    marginBottom: 16,
+  },
+  label: { fontSize: 13, fontWeight: '500', marginBottom: 8, color: '#888' },
+  keyHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  toggleBtn: { padding: 4 },
   input: {
     borderWidth: 1,
-    borderColor: '#ddd',
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    marginBottom: 12,
+    borderColor: '#1e293b',
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    marginBottom: 16,
     fontSize: 14,
-    backgroundColor: '#f9f9f9',
+    color: '#e8e8e8',
+    backgroundColor: '#0a0e17',
   },
   buttonRow: { flexDirection: 'row', gap: 12 },
-  button: { flex: 1, paddingVertical: 12, borderRadius: 8, alignItems: 'center' },
-  testBtn: { backgroundColor: '#2196F3' },
-  saveBtn: { backgroundColor: '#4CAF50' },
-  buttonText: { color: '#fff', fontWeight: '600' },
-  status: { marginTop: 12, fontSize: 14, fontWeight: '600' },
-  ok: { color: '#4CAF50' },
-  fail: { color: '#f44336' },
-  info: { fontSize: 14, color: '#999', marginBottom: 4 },
+  testBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#6c9cff30',
+    backgroundColor: '#6c9cff10',
+  },
+  testText: { color: '#6c9cff', fontWeight: '600', fontSize: 14 },
+  saveBtn: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 10,
+    alignItems: 'center',
+    backgroundColor: '#6c9cff',
+  },
+  saveText: { color: '#0a0e17', fontWeight: '700', fontSize: 14 },
+  statusBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 16,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 10,
+  },
+  statusOk: { backgroundColor: 'rgba(74, 222, 128, 0.08)' },
+  statusFail: { backgroundColor: 'rgba(248, 113, 113, 0.08)' },
+  statusText: { fontSize: 13, fontWeight: '500' },
+  aboutRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: '#1e293b',
+  },
+  aboutLabel: { fontSize: 14, color: '#888' },
+  aboutValue: { fontSize: 14, color: '#e8e8e8' },
 });
