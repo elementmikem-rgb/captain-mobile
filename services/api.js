@@ -98,3 +98,48 @@ export async function getHistory(limit = 50) {
   const response = await c.get('/api/history', { params: { limit } });
   return response.data;
 }
+
+export async function sendMessageStream(message, onChunk, onMeta, onDone) {
+  let url = await AsyncStorage.getItem('captain_api_url') || DEFAULT_URL;
+  if (url.includes('192.168.')) url = DEFAULT_URL;
+  const key = await AsyncStorage.getItem('captain_api_key') || 'Ml2znOnV_iylluaiXn-9Me8JIHVP0eu95yw-V6koqlI';
+
+  const response = await fetch(`${url}/api/chat/stream`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-API-Key': key },
+    body: JSON.stringify({ message }),
+  });
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.error || 'Stream failed');
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let fullText = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue;
+      try {
+        const data = JSON.parse(line.slice(6));
+        if (data.type === 'text') {
+          fullText += data.text;
+          onChunk(data.text, fullText);
+        } else if (data.type === 'meta') {
+          onMeta(data);
+        } else if (data.type === 'done') {
+          onDone(data.full_text, data);
+        }
+      } catch {}
+    }
+  }
+  return fullText;
+}

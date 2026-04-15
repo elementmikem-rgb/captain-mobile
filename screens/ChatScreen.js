@@ -14,7 +14,7 @@ import {
 import { MaterialIcons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import ConversationItem from '../components/ConversationItem';
-import { sendMessage, sendFeedback, testConnection, getBriefing, registerPushToken } from '../services/api';
+import { sendMessage, sendMessageStream, sendFeedback, testConnection, getBriefing, registerPushToken } from '../services/api';
 import {
   requestPermissions,
   startListening,
@@ -111,31 +111,48 @@ export default function ChatScreen({ navigation }) {
     setTranscript('');
 
     const userMsg = { id: Date.now(), text: userText, isUser: true };
-    const updated = [...messages, userMsg];
+    const captainMsgId = Date.now() + 1;
+    const captainMsg = { id: captainMsgId, text: '', isUser: false, modelUsed: '', complexity: '' };
+    const updated = [...messages, userMsg, captainMsg];
     setMessages(updated);
 
     try {
-      const data = await sendMessage(userText);
-      const captainMsg = {
-        id: Date.now() + 1,
-        text: data.response,
-        isUser: false,
-        interactionId: data.interaction_id,
-        modelUsed: data.model_used,
-        complexity: data.complexity,
-      };
-      const final = [...updated, captainMsg];
-      setMessages(final);
-      setLastModelUsed(data.model_used || '');
-      await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(final));
+      const fullText = await sendMessageStream(
+        userText,
+        (chunk, soFar) => {
+          setMessages(prev => prev.map(m => m.id === captainMsgId ? { ...m, text: soFar } : m));
+        },
+        (meta) => {
+          setLastModelUsed(meta.model || '');
+          setMessages(prev => prev.map(m => m.id === captainMsgId ? { ...m, modelUsed: meta.model, complexity: meta.complexity } : m));
+        },
+        (finalText) => {
+          setMessages(prev => {
+            const final = prev.map(m => m.id === captainMsgId ? { ...m, text: finalText } : m);
+            AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(final));
+            return final;
+          });
+        }
+      );
 
+      setIsProcessing(false);
       setIsSpeaking(true);
-      await speak(data.response);
+      await speak(fullText);
       setIsSpeaking(false);
     } catch (error) {
-      Alert.alert('Error', error.message);
-    } finally {
-      setIsProcessing(false);
+      try {
+        const data = await sendMessage(userText);
+        setMessages(prev => prev.map(m => m.id === captainMsgId ? { ...m, text: data.response, modelUsed: data.model_used, complexity: data.complexity } : m));
+        setLastModelUsed(data.model_used || '');
+        setIsProcessing(false);
+        setIsSpeaking(true);
+        await speak(data.response);
+        setIsSpeaking(false);
+      } catch (fallbackError) {
+        Alert.alert('Error', fallbackError.message);
+        setMessages(prev => prev.filter(m => m.id !== captainMsgId));
+        setIsProcessing(false);
+      }
     }
   }, [messages]);
 
