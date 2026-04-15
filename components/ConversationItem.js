@@ -2,14 +2,14 @@ import React from 'react';
 import { View, Text, StyleSheet, Pressable } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 
-export default function ConversationItem({ message, isUser, onFeedback, interactionId, modelUsed }) {
+export default function ConversationItem({ message, isUser, onFeedback, interactionId, modelUsed, complexity }) {
   return (
     <View style={[styles.container, isUser ? styles.userMessage : styles.captainMessage]}>
       <View style={styles.contentContainer}>
         <Text style={styles.label}>{isUser ? 'You' : 'Captain'}</Text>
         <Text style={styles.messageText}>{message}</Text>
         {!isUser && modelUsed ? (
-          <Text style={styles.modelTag}>via {modelUsed}</Text>
+          <Text style={styles.modelTag}>via {modelUsed}{complexity ? ` [${complexity}]` : ''}</Text>
         ) : null}
       </View>
 

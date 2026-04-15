@@ -11,7 +11,7 @@ import {
 import { MaterialIcons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import ConversationItem from '../components/ConversationItem';
-import { sendMessage, sendFeedback, testConnection } from '../services/api';
+import { sendMessage, sendFeedback, testConnection, getBriefing, registerPushToken } from '../services/api';
 import {
   requestPermissions,
   startListening,
@@ -44,6 +44,15 @@ export default function ChatScreen({ navigation }) {
           [{ text: 'Settings', onPress: () => navigation.navigate('Settings') }]
         );
       }
+      // Register push token
+      try {
+        const Notifications = require('expo-notifications');
+        const { status } = await Notifications.requestPermissionsAsync();
+        if (status === 'granted') {
+          const tokenData = await Notifications.getExpoPushTokenAsync();
+          await registerPushToken(tokenData.data);
+        }
+      } catch {}
     })();
   }, []);
 
@@ -109,6 +118,7 @@ export default function ChatScreen({ navigation }) {
         isUser: false,
         interactionId: data.interaction_id,
         modelUsed: data.model_used,
+        complexity: data.complexity,
       };
       const final = [...updated, captainMsg];
       setMessages(final);
@@ -130,6 +140,31 @@ export default function ChatScreen({ navigation }) {
       await sendFeedback(interactionId, helpful);
     } catch {}
   }, []);
+
+  const handleBriefing = useCallback(async () => {
+    setIsProcessing(true);
+    try {
+      const hour = new Date().getHours();
+      const type = hour < 15 ? 'morning' : 'evening';
+      const data = await getBriefing(type);
+      const briefingMsg = {
+        id: Date.now(),
+        text: data.text,
+        isUser: false,
+        modelUsed: 'Briefing',
+      };
+      const updated = [...messages, briefingMsg];
+      setMessages(updated);
+      await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+      setIsSpeaking(true);
+      await speak(data.text);
+      setIsSpeaking(false);
+    } catch (error) {
+      Alert.alert('Error', error.message);
+    } finally {
+      setIsProcessing(false);
+    }
+  }, [messages]);
 
   const handleClear = useCallback(() => {
     Alert.alert('Clear History', 'Clear all conversation history?', [
@@ -189,6 +224,7 @@ export default function ChatScreen({ navigation }) {
               isUser={msg.isUser}
               interactionId={msg.interactionId}
               modelUsed={msg.modelUsed}
+              complexity={msg.complexity}
               onFeedback={handleFeedback}
             />
           ))
@@ -225,11 +261,17 @@ export default function ChatScreen({ navigation }) {
           <Text style={styles.modelText}>Using {lastModelUsed}</Text>
         ) : null}
 
-        {messages.length > 0 && (
-          <Pressable onPress={handleClear} style={styles.clearBtn}>
-            <Text style={styles.clearText}>Clear History</Text>
+        <View style={styles.actionRow}>
+          <Pressable onPress={handleBriefing} disabled={isProcessing} style={styles.briefingBtn}>
+            <MaterialIcons name="wb-sunny" size={16} color="#ff9800" />
+            <Text style={styles.briefingText}>Briefing</Text>
           </Pressable>
-        )}
+          {messages.length > 0 && (
+            <Pressable onPress={handleClear} style={styles.clearBtn}>
+              <Text style={styles.clearText}>Clear History</Text>
+            </Pressable>
+          )}
+        </View>
       </View>
     </View>
   );
@@ -279,6 +321,9 @@ const styles = StyleSheet.create({
     elevation: 4,
   },
   modelText: { marginTop: 8, fontSize: 12, color: '#999', fontStyle: 'italic' },
-  clearBtn: { marginTop: 12, paddingHorizontal: 16, paddingVertical: 8, backgroundColor: '#f5f5f5', borderRadius: 8 },
+  actionRow: { flexDirection: 'row', gap: 12, marginTop: 12 },
+  briefingBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 16, paddingVertical: 8, backgroundColor: '#fff3e0', borderRadius: 8 },
+  briefingText: { color: '#e65100', fontSize: 14, fontWeight: '600' },
+  clearBtn: { paddingHorizontal: 16, paddingVertical: 8, backgroundColor: '#f5f5f5', borderRadius: 8 },
   clearText: { color: '#666', fontSize: 14 },
 });
