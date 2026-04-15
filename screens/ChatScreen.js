@@ -207,7 +207,7 @@ export default function ChatScreen({ navigation }) {
     : '#6c9cff';
 
   return (
-    <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+    <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
       <View style={styles.header}>
         <View>
           <Text style={styles.title}>Captain</Text>
@@ -435,7 +435,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 8,
     paddingHorizontal: 16,
-    paddingBottom: 24,
+    paddingBottom: 12,
     paddingTop: 12,
   },
   inputSideBtn: {
