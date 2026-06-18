@@ -231,9 +231,30 @@ export async function getExpenseSummary() {
   return response.data;
 }
 
+export async function getExpenses(from, to) {
+  const c = await getClient();
+  const params = {};
+  if (from) params.from = from;
+  if (to) params.to = to;
+  const response = await c.get('/api/expenses', { params });
+  return response.data;
+}
+
 export async function searchContacts(q) {
   const c = await getClient();
   const response = await c.get('/api/contacts', { params: { q } });
+  return response.data;
+}
+
+export async function getContacts() {
+  const c = await getClient();
+  const response = await c.get('/api/contacts');
+  return response.data;
+}
+
+export async function addContact(name, phone, notes) {
+  const c = await getClient();
+  const response = await c.post('/api/contacts', { name, phone, notes: notes || '' });
   return response.data;
 }
 
@@ -300,6 +321,16 @@ export async function recallMemory(query) {
     return response.data;
   } catch {
     return { summary: '' };
+  }
+}
+
+export async function summarizeSession(messages) {
+  const c = await getClient();
+  try {
+    const response = await c.post('/api/summarize', { messages });
+    return response.data;
+  } catch (error) {
+    throw new Error(error.response?.data?.error || 'Summarize failed');
   }
 }
 

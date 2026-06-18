@@ -19,8 +19,10 @@ import {
   addReminder,
   deleteReminder,
   getExpenseSummary,
+  getExpenses,
   addExpense,
   searchContacts,
+  getContacts,
   getMemoryFacts,
   getDailySummary,
   getWeather,
@@ -57,6 +59,7 @@ export default function ActionsScreen({ navigation }) {
   const [bookings, setBookings] = useState([]);
   const [reminders, setReminders] = useState([]);
   const [expenses, setExpenses] = useState(null);
+  const [expenseList, setExpenseList] = useState([]);
   const [contacts, setContacts] = useState({ business: [], personal: [] });
   const [facts, setFacts] = useState({});
   const [summary, setSummary] = useState(null);
@@ -76,6 +79,7 @@ export default function ActionsScreen({ navigation }) {
   const EXPENSE_CATS = ['food', 'fuel', 'supplies', 'marketing', 'other'];
 
   const loadAll = useCallback(async () => {
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
     const results = await Promise.allSettled([
       getBookingsToday(),
       getReminders(),
@@ -86,6 +90,8 @@ export default function ActionsScreen({ navigation }) {
       getDocuments(),
       getBirthdays(),
       getBookmarks(),
+      getExpenses(thirtyDaysAgo, null),
+      getContacts(),
     ]);
 
     if (results[0].status === 'fulfilled') setBookings(results[0].value.bookings || []);
@@ -97,6 +103,8 @@ export default function ActionsScreen({ navigation }) {
     if (results[6].status === 'fulfilled') setNotes(results[6].value.documents || []);
     if (results[7].status === 'fulfilled') setBirthdays(results[7].value.birthdays || []);
     if (results[8].status === 'fulfilled') setBookmarks(results[8].value.bookmarks || []);
+    if (results[9].status === 'fulfilled') setExpenseList(results[9].value.expenses || []);
+    if (results[10].status === 'fulfilled') setContacts(results[10].value || { business: [], personal: [] });
     setLoading(false);
   }, []);
 
@@ -166,8 +174,13 @@ export default function ActionsScreen({ navigation }) {
     try {
       await addExpense(amt, expenseCategory, '');
       setExpenseAmount('');
-      const data = await getExpenseSummary();
-      setExpenses(data);
+      const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+      const [summaryData, listData] = await Promise.all([
+        getExpenseSummary(),
+        getExpenses(thirtyDaysAgo, null),
+      ]);
+      setExpenses(summaryData);
+      setExpenseList(listData.expenses || []);
     } catch (e) {
       Alert.alert('Error', e.message);
     }
@@ -267,27 +280,32 @@ export default function ActionsScreen({ navigation }) {
             <MaterialIcons name="search" size={20} color="#fff" />
           </Pressable>
         </View>
-        {[...(contacts.personal || []), ...(contacts.business || [])].slice(0, 6).map((c, i) => (
-          <View key={i} style={[styles.listRow, { borderBottomColor: theme.divider }]}>
+        {[...(contacts.personal || []), ...(contacts.business || [])].slice(0, 10).map((c, i) => (
+          <View key={c.phone || i} style={[styles.listRow, { borderBottomColor: theme.divider }]}>
             <MaterialIcons name="person" size={16} color={theme.fgTertiary} style={{ marginRight: 8 }} />
             <View style={{ flex: 1 }}>
-              <Text style={[styles.listMain, { color: theme.fgSecondary }]}>{c.name}</Text>
-              {c.phone && <Text style={[styles.listSub, { color: theme.fgTertiary }]}>{c.phone}</Text>}
+              <Text style={[styles.listMain, { color: theme.fgSecondary }]}>{c.name || c.caller_name}</Text>
+              {(c.phone || c.caller_number) && (
+                <Text style={[styles.listSub, { color: theme.fgTertiary }]}>{c.phone || c.caller_number}</Text>
+              )}
+              {c.notes ? <Text style={[styles.listSub, { color: theme.fgTertiary }]} numberOfLines={1}>{c.notes}</Text> : null}
             </View>
-            {c.phone && (
+            {(c.phone || c.caller_number) && (
               <View style={{ flexDirection: 'row', gap: 6 }}>
-                <Pressable onPress={() => Linking.openURL(`tel:${c.phone}`)} hitSlop={8} style={styles.contactAction}>
-                  <MaterialIcons name="call" size={14} color="#4ade80" />
+                <Pressable onPress={() => Linking.openURL(`tel:${c.phone || c.caller_number}`)} hitSlop={8} style={styles.contactAction}>
+                  <MaterialIcons name="call" size={16} color="#4ade80" />
                 </Pressable>
-                <Pressable onPress={() => Linking.openURL(`sms:${c.phone}`)} hitSlop={8} style={styles.contactAction}>
-                  <MaterialIcons name="message" size={14} color="#38bdf8" />
+                <Pressable onPress={() => Linking.openURL(`sms:${c.phone || c.caller_number}`)} hitSlop={8} style={styles.contactAction}>
+                  <MaterialIcons name="sms" size={16} color="#38bdf8" />
                 </Pressable>
               </View>
             )}
           </View>
         ))}
-        {contacts.personal.length === 0 && contacts.business.length === 0 && contactQ ? (
-          <Text style={[styles.emptyText, { color: theme.fgTertiary }]}>No contacts found</Text>
+        {contacts.personal.length === 0 && contacts.business.length === 0 ? (
+          <Text style={[styles.emptyText, { color: theme.fgTertiary }]}>
+            {contactQ ? 'No contacts found' : 'No contacts yet. Say "Add contact: Name, phone" to Captain.'}
+          </Text>
         ) : null}
       </Card>
 
@@ -340,6 +358,91 @@ export default function ActionsScreen({ navigation }) {
         {!expenses && (
           <Text style={[styles.emptyText, { color: theme.fgTertiary }]}>No expenses tracked yet</Text>
         )}
+      </Card>
+
+      {/* Expense Analytics */}
+      <Card icon="bar-chart" label="Expense Analytics" color="#34d399" collapsible>
+        {(() => {
+          const CAT_COLORS = {
+            food: '#f97316',
+            fuel: '#3b82f6',
+            supplies: '#8b5cf6',
+            marketing: '#ec4899',
+            other: '#6b7280',
+          };
+
+          const now = Date.now();
+          const weekMs = 7 * 24 * 60 * 60 * 1000;
+          const todayStr = new Date(now).toISOString().slice(0, 10);
+          const weekAgoStr = new Date(now - weekMs).toISOString().slice(0, 10);
+          const monthStr = new Date(now).toISOString().slice(0, 7); // 'YYYY-MM'
+
+          const weekTotal = expenseList
+            .filter(e => e.date >= weekAgoStr && e.date <= todayStr)
+            .reduce((s, e) => s + Number(e.amount), 0);
+          const monthTotal = expenseList
+            .filter(e => (e.date || '').startsWith(monthStr))
+            .reduce((s, e) => s + Number(e.amount), 0);
+          const allTotal = expenseList.reduce((s, e) => s + Number(e.amount), 0);
+
+          const grouped = {};
+          for (const e of expenseList) {
+            const cat = e.category || 'other';
+            grouped[cat] = (grouped[cat] || 0) + Number(e.amount);
+          }
+          const cats = Object.entries(grouped).sort((a, b) => b[1] - a[1]);
+          const maxAmt = cats.length > 0 ? cats[0][1] : 1;
+
+          return (
+            <View style={styles.analyticsWrap}>
+              {/* Summary chips */}
+              <View style={styles.analyticsChips}>
+                <View style={[styles.analyticsChip, { backgroundColor: theme.inputBg }]}>
+                  <Text style={[styles.analyticsChipVal, { color: theme.fgPrimary }]}>${weekTotal.toFixed(0)}</Text>
+                  <Text style={[styles.analyticsChipLabel, { color: theme.fgTertiary }]}>This Week</Text>
+                </View>
+                <View style={[styles.analyticsChip, { backgroundColor: theme.inputBg }]}>
+                  <Text style={[styles.analyticsChipVal, { color: theme.fgPrimary }]}>${monthTotal.toFixed(0)}</Text>
+                  <Text style={[styles.analyticsChipLabel, { color: theme.fgTertiary }]}>This Month</Text>
+                </View>
+                <View style={[styles.analyticsChip, { backgroundColor: theme.inputBg }]}>
+                  <Text style={[styles.analyticsChipVal, { color: theme.fgPrimary }]}>${allTotal.toFixed(0)}</Text>
+                  <Text style={[styles.analyticsChipLabel, { color: theme.fgTertiary }]}>All Time</Text>
+                </View>
+              </View>
+
+              {/* Bar chart */}
+              {cats.length === 0 ? (
+                <Text style={[styles.emptyText, { color: theme.fgTertiary }]}>No expenses yet</Text>
+              ) : (
+                <>
+                  {cats.map(([cat, amt]) => {
+                    const barColor = CAT_COLORS[cat] || CAT_COLORS.other;
+                    const pct = (amt / maxAmt) * 100;
+                    return (
+                      <View key={cat} style={styles.analyticsRow}>
+                        <Text style={[styles.analyticsCatLabel, { color: theme.fgTertiary }]}>{cat}</Text>
+                        <View style={styles.analyticsBarTrack}>
+                          <View
+                            style={[
+                              styles.analyticsBar,
+                              { width: `${pct}%`, backgroundColor: barColor },
+                            ]}
+                          />
+                        </View>
+                        <Text style={[styles.analyticsAmt, { color: theme.fgPrimary }]}>${amt.toFixed(0)}</Text>
+                      </View>
+                    );
+                  })}
+                  <View style={[styles.analyticsTotalRow, { borderTopColor: theme.divider }]}>
+                    <Text style={[styles.listSub, { color: theme.fgTertiary }]}>Total this month</Text>
+                    <Text style={[styles.analyticsChipVal, { color: '#34d399' }]}>${monthTotal.toFixed(2)}</Text>
+                  </View>
+                </>
+              )}
+            </View>
+          );
+        })()}
       </Card>
 
       {/* Upcoming Bookings */}
@@ -521,4 +624,32 @@ const styles = StyleSheet.create({
   weatherWind: { fontSize: 13 },
   deleteBtn: { padding: 6 },
   contactAction: { padding: 6 },
+  analyticsWrap: { paddingHorizontal: 16, paddingBottom: 14 },
+  analyticsChips: {
+    flexDirection: 'row', gap: 8, marginBottom: 16,
+  },
+  analyticsChip: {
+    flex: 1, borderRadius: 10, paddingVertical: 10, alignItems: 'center',
+  },
+  analyticsChipVal: { fontSize: 16, fontWeight: '700' },
+  analyticsChipLabel: { fontSize: 10, marginTop: 2, textTransform: 'uppercase', letterSpacing: 0.5 },
+  analyticsRow: {
+    flexDirection: 'row', alignItems: 'center', marginBottom: 10, gap: 8,
+  },
+  analyticsCatLabel: {
+    width: 64, fontSize: 11, fontWeight: '600', textTransform: 'capitalize',
+  },
+  analyticsBarTrack: {
+    flex: 1, height: 10, borderRadius: 5, backgroundColor: 'rgba(128,128,128,0.15)', overflow: 'hidden',
+  },
+  analyticsBar: {
+    height: '100%', borderRadius: 5,
+  },
+  analyticsAmt: {
+    width: 44, fontSize: 12, fontWeight: '600', textAlign: 'right',
+  },
+  analyticsTotalRow: {
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+    marginTop: 8, paddingTop: 10, borderTopWidth: StyleSheet.hairlineWidth,
+  },
 });
