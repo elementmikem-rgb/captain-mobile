@@ -25,7 +25,7 @@ import ConversationItem from '../components/ConversationItem';
 import MicButton from '../components/MicButton';
 import Waveform from '../components/Waveform';
 import { useTheme } from '../context/ThemeContext';
-import { sendMessage, sendMessageStream, sendFeedback, testConnection, getBriefing, getDailyBriefingStructured, registerPushToken, sendVision, getBookingsToday, getWeather, addReminder, addMemory, recallMemory, addDocument, addPersonMemory, addContact, summarizeSession, generateDraft, addFollowup, getSuggestions, getDocuments } from '../services/api';
+import { sendMessage, sendMessageStream, sendFeedback, testConnection, getBriefing, getDailyBriefingStructured, registerPushToken, sendVision, getBookingsToday, getWeather, addReminder, addMemory, recallMemory, addDocument, addPersonMemory, addContact, summarizeSession, generateDraft, addFollowup, getSuggestions, getDocuments, getContacts, summarizeMeeting, getRoutineBriefing } from '../services/api';
 import {
   requestPermissions,
   startListening,
@@ -464,6 +464,20 @@ export default function ChatScreen({ navigation, route }) {
   const dictationScrollRef = useRef(null);
   const dictationTimerRef = useRef(null);
   const isDictationModeRef = useRef(false);
+
+  // ── Meeting Mode state ───────────────────────────────────────────────────────
+  const [meetingMode, setMeetingMode] = useState(false);
+  const [meetingPaused, setMeetingPaused] = useState(false);
+  const [meetingDuration, setMeetingDuration] = useState(0); // seconds
+  const [meetingPreviewLines, setMeetingPreviewLines] = useState([]);
+  const [meetingGenerating, setMeetingGenerating] = useState(false);
+  const meetingTranscriptRef = useRef('');
+  const meetingStartTimeRef = useRef(null);
+  const meetingTimerRef = useRef(null);
+  const isMeetingModeRef = useRef(false);
+  const meetingPausedRef = useRef(false);
+  const meetingDotAnim = useRef(new Animated.Value(1)).current;
+  // ────────────────────────────────────────────────────────────────────────────
   const [searchMode, setSearchMode] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const searchBarHeight = useRef(new Animated.Value(0)).current;
@@ -487,6 +501,9 @@ export default function ChatScreen({ navigation, route }) {
   const chipAnim = useRef(new Animated.Value(0)).current;
   const chipDismissTimer = useRef(null);
   const dictationDotAnim = useRef(new Animated.Value(1)).current;
+  const [speedDialCard, setSpeedDialCard] = useState(null); // { name, phone, action: 'call'|'text' }
+  const speedDialAnim = useRef(new Animated.Value(0)).current;
+  const speedDialDismissTimer = useRef(null);
   const scrollViewRef = useRef(null);
   const inFlightRef = useRef(false);
   const spokenGreeting = useRef(false);
@@ -501,6 +518,11 @@ export default function ChatScreen({ navigation, route }) {
   });
   const readingOverlayAnim = useRef(new Animated.Value(0)).current;
   const readingTokenRef = useRef(0);
+  // ────────────────────────────────────────────────────────────────────────────
+
+  // ── Routine state ────────────────────────────────────────────────────────────
+  const [activeRoutine, setActiveRoutine] = useState(null); // { name, step, totalSteps }
+  const routineBannerAnim = useRef(new Animated.Value(0)).current;
   // ────────────────────────────────────────────────────────────────────────────
 
   const dismissChips = useCallback(() => {
@@ -899,6 +921,23 @@ export default function ChatScreen({ navigation, route }) {
     const text = event.results[0]?.transcript || '';
     setTranscript(text);
 
+    if (isMeetingModeRef.current) {
+      if (text.trim() && event.isFinal) {
+        const elapsed = meetingStartTimeRef.current ? Math.floor((Date.now() - meetingStartTimeRef.current) / 1000) : 0;
+        const mm = String(Math.floor(elapsed / 60)).padStart(2, '0');
+        const ss = String(elapsed % 60).padStart(2, '0');
+        const line = `[${mm}:${ss}] ${text.trim()}`;
+        meetingTranscriptRef.current = meetingTranscriptRef.current ? meetingTranscriptRef.current + '\n' + line : line;
+        const allLines = meetingTranscriptRef.current.split('\n');
+        setMeetingPreviewLines(allLines.slice(-3));
+        setTranscript('');
+        setTimeout(() => { if (isMeetingModeRef.current && !meetingPausedRef.current) { startListening(); setIsListening(true); } }, 100);
+      } else if (event.isFinal) {
+        setTimeout(() => { if (isMeetingModeRef.current && !meetingPausedRef.current) { startListening(); setIsListening(true); } }, 100);
+      }
+      return;
+    }
+
     if (isDictationModeRef.current) {
       // In dictation mode: accumulate interim results into dictationText
       if (text.trim()) {
@@ -944,6 +983,16 @@ export default function ChatScreen({ navigation, route }) {
   });
 
   useSpeechRecognitionEvent('error', (event) => {
+    if (isMeetingModeRef.current) {
+      setTranscript('');
+      setTimeout(() => {
+        if (isMeetingModeRef.current && !meetingPausedRef.current) {
+          startListening();
+          setIsListening(true);
+        }
+      }, 300);
+      return;
+    }
     if (isDictationModeRef.current) {
       // In dictation mode: silently restart on errors (no-speech is expected during pauses)
       setTranscript('');
@@ -963,6 +1012,7 @@ export default function ChatScreen({ navigation, route }) {
   });
 
   useSpeechRecognitionEvent('end', () => {
+    if (isMeetingModeRef.current) return; // meeting mode manages its own restart
     if (isDictationModeRef.current) return; // dictation manages its own restart
     setIsListening(false);
   });
@@ -989,6 +1039,86 @@ export default function ChatScreen({ navigation, route }) {
       Alert.alert('Note Error', 'Could not save voice note: ' + e.message);
     }
   }, []);
+
+  const enterMeetingMode = useCallback(async () => {
+    isMeetingModeRef.current = true;
+    meetingPausedRef.current = false;
+    meetingTranscriptRef.current = '';
+    meetingStartTimeRef.current = Date.now();
+    setMeetingMode(true);
+    setMeetingPaused(false);
+    setMeetingDuration(0);
+    setMeetingPreviewLines([]);
+    haptic('wake');
+    meetingDotAnim.setValue(1);
+    Animated.loop(
+      Animated.sequence([
+        Animated.timing(meetingDotAnim, { toValue: 0.1, duration: 600, useNativeDriver: true }),
+        Animated.timing(meetingDotAnim, { toValue: 1, duration: 600, useNativeDriver: true }),
+      ])
+    ).start();
+    meetingTimerRef.current = setInterval(() => {
+      setMeetingDuration(prev => prev + 1);
+    }, 1000);
+    const granted = await requestPermissions();
+    if (granted) {
+      setTranscript('');
+      setIsListening(true);
+      startListening();
+    }
+  }, [meetingDotAnim]);
+
+  const exitMeetingMode = useCallback(() => {
+    isMeetingModeRef.current = false;
+    meetingPausedRef.current = false;
+    meetingDotAnim.stopAnimation();
+    meetingDotAnim.setValue(1);
+    if (meetingTimerRef.current) clearInterval(meetingTimerRef.current);
+    stopListening();
+    setIsListening(false);
+    setMeetingMode(false);
+    setMeetingPaused(false);
+    setMeetingDuration(0);
+    setMeetingPreviewLines([]);
+    setTranscript('');
+  }, [meetingDotAnim]);
+
+  const handleEndMeeting = useCallback(
+    async () => {
+      const fullTranscript = meetingTranscriptRef.current.trim();
+      exitMeetingMode();
+      if (!fullTranscript) {
+        Alert.alert('No transcript', 'No speech was recorded during this meeting.');
+        return;
+      }
+      setMeetingGenerating(true);
+      const thinkingId = Date.now();
+      setMessages(prev => {
+        const next = [...prev, { id: thinkingId, text: 'Generating meeting notes...', isUser: false, isSystem: true, ts: thinkingId }];
+        AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(next)).catch(() => {});
+        return next;
+      });
+      try {
+        const result = await summarizeMeeting(fullTranscript);
+        const notes = result.notes || 'Could not generate notes.';
+        const notesMsg = { id: Date.now(), text: notes, isUser: false, modelUsed: 'Meeting Notes', ts: Date.now() };
+        setMessages(prev => {
+          const next = prev.filter(m => m.id !== thinkingId).concat(notesMsg);
+          AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(next)).catch(() => {});
+          return next;
+        });
+        const dateStr = new Date().toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
+        await addDocument('Meeting Notes ' + dateStr, notes).catch(() => {});
+        haptic('complete');
+      } catch (e) {
+        setMessages(prev => prev.filter(m => m.id !== thinkingId));
+        Alert.alert('Meeting Notes Error', e.message);
+      } finally {
+        setMeetingGenerating(false);
+      }
+    },
+    [exitMeetingMode]
+  );
 
   const enterDictationMode = useCallback(async () => {
     isDictationModeRef.current = true;
@@ -1173,7 +1303,203 @@ export default function ChatScreen({ navigation, route }) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ── Reading Mode helpers ─────────────────────────────────────────────────────
+    // ── Built-in Routines ─────────────────────────────────────────────────────────
+  const BUILT_IN_ROUTINES = [
+    {
+      name: 'MORNING',
+      triggers: ['morning routine', 'start my morning', 'good morning captain'],
+      announce: (name) => `Good morning${name ? ', ' + name : ''}. Starting your morning routine.`,
+      steps: [
+        async (addMsg) => {
+          addMsg('Fetching your morning briefing...');
+          try {
+            const data = await getRoutineBriefing();
+            const parts = [];
+            if (data.weatherSummary) parts.push(`Weather: ${data.weatherSummary}`);
+            parts.push(`${data.bookingCount} booking${data.bookingCount !== 1 ? 's' : ''} today`);
+            if (data.reminderCount > 0) parts.push(`${data.reminderCount} reminder${data.reminderCount !== 1 ? 's' : ''} pending`);
+            const summary = parts.join('. ');
+            addMsg(`Briefing: ${summary}`);
+            await speak(summary, 1.0);
+          } catch {
+            addMsg('Could not fetch briefing. Continuing...');
+          }
+        },
+        async (addMsg) => {
+          addMsg('Checking for urgent messages...');
+          await speak('Do you have any urgent messages you need to address this morning?', 1.0);
+        },
+        async (addMsg, setChips) => {
+          addMsg('Morning routine complete.');
+          setChips(['Add reminder', 'Check expenses', 'Set intention']);
+        },
+      ],
+    },
+    {
+      name: 'EVENING',
+      triggers: ['evening routine', 'wrap up my day', 'end of day captain'],
+      announce: () => 'Wrapping up your day.',
+      steps: [
+        async (addMsg) => {
+          addMsg('Fetching your day summary...');
+          try {
+            const data = await getRoutineBriefing();
+            const bookingText = `${data.bookingCount} booking${data.bookingCount !== 1 ? 's' : ''} today`;
+            const summary = `Here is your day summary. ${bookingText}.`;
+            addMsg(summary);
+            await speak(summary, 1.0);
+          } catch {
+            addMsg('Could not fetch day summary. Continuing...');
+          }
+        },
+        async (addMsg) => {
+          addMsg('Thinking about tomorrow...');
+          await speak('What should you focus on tomorrow? Think about your top priority.', 1.0);
+        },
+        async (addMsg) => {
+          addMsg('Evening routine complete. Save a session summary?');
+          await speak('Would you like me to save a session summary for today?', 1.0);
+        },
+      ],
+    },
+    {
+      name: 'FOCUS',
+      triggers: ['focus routine', 'deep work mode', 'i need to focus'],
+      announce: () => 'Entering focus mode.',
+      steps: [
+        async (addMsg) => {
+          addMsg('Enabling whisper mode, disabling ambient mode...');
+          const saved = await AsyncStorage.getItem('captain_settings');
+          const current = saved ? JSON.parse(saved) : {};
+          const updated = { ...current, whisperMode: true, ambientMode: false };
+          await AsyncStorage.setItem('captain_settings', JSON.stringify(updated));
+          setAppSettings(prev => ({ ...prev, whisperMode: true, ambientMode: false }));
+        },
+        async (addMsg) => {
+          addMsg("Focus mode on. I'll only interrupt for urgent items.");
+          await speak("Focus mode on. I'll only interrupt for urgent items.", 1.0);
+        },
+        async (addMsg, setChips) => {
+          addMsg('Set a focus timer? Say a duration.');
+          setChips(['25 min timer', '45 min timer', '60 min timer']);
+        },
+      ],
+    },
+    {
+      name: 'TRAVEL',
+      triggers: ['travel mode', "i'm traveling", 'heading out'],
+      announce: () => 'Travel mode on.',
+      steps: [
+        async (addMsg) => {
+          addMsg('Enabling travel mode...');
+          const saved = await AsyncStorage.getItem('captain_settings');
+          const current = saved ? JSON.parse(saved) : {};
+          const updated = { ...current, driveMode: true, ambientMode: true };
+          await AsyncStorage.setItem('captain_settings', JSON.stringify(updated));
+          setAppSettings(prev => ({ ...prev, driveMode: true, ambientMode: true }));
+        },
+        async (addMsg) => {
+          addMsg('Fetching weather...');
+          try {
+            const data = await getRoutineBriefing();
+            const weatherText = data.weatherSummary
+              ? `Weather today: ${data.weatherSummary}.`
+              : 'Weather unavailable.';
+            const bookingText = `You have ${data.bookingCount} booking${data.bookingCount !== 1 ? 's' : ''} today.`;
+            const travelBrief = `Travel mode on. ${weatherText} ${bookingText}`;
+            addMsg(travelBrief);
+            await speak(travelBrief, 0.9);
+          } catch {
+            addMsg('Weather unavailable. Travel mode active.');
+            await speak('Travel mode on. Have a safe trip.', 0.9);
+          }
+        },
+        async (addMsg) => {
+          addMsg('Travel mode active. Drive safe.');
+        },
+      ],
+    },
+  ];
+
+  const checkRoutine = useCallback((text) => {
+    const lower = text.trim().toLowerCase();
+    return BUILT_IN_ROUTINES.find(r => r.triggers.some(t => lower === t || lower.startsWith(t)));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const executeRoutine = useCallback(async (routine) => {
+    let userName = null;
+    try {
+      const s = await AsyncStorage.getItem('captain_onboarding_profile');
+      const parsed = s ? JSON.parse(s) : {};
+      userName = parsed.name || null;
+    } catch {}
+
+    const announce = routine.announce(userName);
+
+    setActiveRoutine({ name: routine.name, step: 0, totalSteps: routine.steps.length });
+    routineBannerAnim.setValue(0);
+    Animated.timing(routineBannerAnim, { toValue: 1, duration: 300, useNativeDriver: true }).start();
+
+    const announceMsg = {
+      id: Date.now(),
+      text: `[${routine.name} ROUTINE] ${announce}`,
+      isUser: false,
+      isSystem: true,
+      ts: Date.now(),
+    };
+    setMessages(prev => {
+      const next = [...prev, announceMsg];
+      AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(next)).catch(() => {});
+      return next;
+    });
+    await speak(announce, 1.0);
+
+    const addStepMsg = (text) => {
+      const msg = {
+        id: Date.now() + Math.random(),
+        text: `  ${text}`,
+        isUser: false,
+        isSystem: true,
+        ts: Date.now(),
+      };
+      setMessages(prev => {
+        const next = [...prev, msg];
+        AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(next)).catch(() => {});
+        return next;
+      });
+    };
+
+    const setRoutineChips = (labels) => {
+      const chips = labels.map(label => ({
+        label,
+        onPress: () => handleSend(label),
+      }));
+      setContextChips(chips);
+      chipAnim.setValue(0);
+      Animated.timing(chipAnim, { toValue: 1, duration: 300, useNativeDriver: true }).start();
+    };
+
+    for (let i = 0; i < routine.steps.length; i++) {
+      setActiveRoutine({ name: routine.name, step: i + 1, totalSteps: routine.steps.length });
+      try {
+        await routine.steps[i](addStepMsg, setRoutineChips);
+      } catch (e) {
+        addStepMsg(`Step error: ${e.message}`);
+      }
+      if (i < routine.steps.length - 1) {
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+    }
+
+    Animated.timing(routineBannerAnim, { toValue: 0, duration: 300, useNativeDriver: true }).start(() => {
+      setActiveRoutine(null);
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routineBannerAnim, chipAnim]);
+  // ─────────────────────────────────────────────────────────────────────────────
+
+    // ── Reading Mode helpers ─────────────────────────────────────────────────────
   const splitSentencesForReading = useCallback((text) => {
     const protected_ = text
       .replace(/\b(Mr|Mrs|Ms|Dr|Prof|Sr|Jr|St|Ave|Blvd|vs|etc|approx|dept|est)\./gi, '$1\x00')
@@ -1381,8 +1707,155 @@ export default function ChatScreen({ navigation, route }) {
       Animated.timing(hudAnim, { toValue: 0, duration: 250, useNativeDriver: true }).start(() => setHudMode(false));
     }
   }, [hudMode, hudAnim]);
+
+  // ── Speed Dial ───────────────────────────────────────────────────────────────
+  const dismissSpeedDialCard = useCallback(() => {
+    if (speedDialDismissTimer.current) clearTimeout(speedDialDismissTimer.current);
+    Animated.timing(speedDialAnim, { toValue: 0, duration: 220, useNativeDriver: true }).start(() => {
+      setSpeedDialCard(null);
+      speedDialAnim.setValue(0);
+    });
+  }, [speedDialAnim]);
+
+  const showSpeedDialCard = useCallback((contact, action) => {
+    if (speedDialDismissTimer.current) clearTimeout(speedDialDismissTimer.current);
+    setSpeedDialCard({ name: contact.name, phone: contact.phone, action });
+    speedDialAnim.setValue(0);
+    Animated.timing(speedDialAnim, { toValue: 1, duration: 250, useNativeDriver: true }).start();
+    speedDialDismissTimer.current = setTimeout(dismissSpeedDialCard, 3000);
+  }, [speedDialAnim, dismissSpeedDialCard]);
+
+  const handleSpeedDial = useCallback(async (userText) => {
+    // Detect call/text intent patterns
+    const SPEED_DIAL_PATTERNS = [
+      { re: /^call (.+)$/i, action: 'call', nameGroup: 1 },
+      { re: /^text (.+)$/i, action: 'text', nameGroup: 1 },
+      { re: /^(?:phone|ring|dial) (.+)$/i, action: 'call', nameGroup: 1 },
+      { re: /^send (?:a )?(?:text|message|sms) to (.+)$/i, action: 'text', nameGroup: 1 },
+    ];
+
+    let detectedAction = null;
+    let rawName = null;
+
+    for (const { re, action, nameGroup } of SPEED_DIAL_PATTERNS) {
+      const m = userText.trim().match(re);
+      if (m) {
+        detectedAction = action;
+        rawName = m[nameGroup].trim();
+        break;
+      }
+    }
+
+    if (!detectedAction || !rawName) return false;
+
+    // Load contacts and fuzzy-match
+    let contacts = [];
+    try {
+      const data = await getContacts();
+      contacts = Array.isArray(data) ? data : (data.contacts || []);
+    } catch {
+      return false; // fall through to AI if contacts unavailable
+    }
+
+    if (contacts.length === 0) return false;
+
+    const lowerRaw = rawName.toLowerCase();
+    const matches = contacts.filter(c =>
+      c.name && c.name.toLowerCase().includes(lowerRaw)
+    );
+
+    if (matches.length === 0) {
+      // No match — let AI handle it
+      return false;
+    }
+
+    if (matches.length === 1) {
+      const contact = matches[0];
+      if (!contact.phone) return false;
+
+      haptic('navigate');
+
+      if (detectedAction === 'text') {
+        // SMS — open immediately, no confirmation card needed
+        const sysMsg = {
+          id: Date.now(),
+          text: `Opening SMS to ${contact.name}...`,
+          isUser: false,
+          isSystem: true,
+          ts: Date.now(),
+        };
+        setMessages(prev => {
+          const next = [...prev, sysMsg];
+          AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(next)).catch(() => {});
+          return next;
+        });
+        Linking.openURL(`sms:${contact.phone}`);
+      } else {
+        // Call — show confirmation card
+        const sysMsg = {
+          id: Date.now(),
+          text: `Calling ${contact.name}...`,
+          isUser: false,
+          isSystem: true,
+          ts: Date.now(),
+        };
+        setMessages(prev => {
+          const next = [...prev, sysMsg];
+          AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(next)).catch(() => {});
+          return next;
+        });
+        showSpeedDialCard(contact, 'call');
+      }
+      return true;
+    }
+
+    // Multiple matches — show picker Alert
+    const options = matches.slice(0, 6).map(c => ({
+      text: `${c.name}${c.phone ? '  ' + c.phone : ''}`,
+      onPress: () => {
+        if (!c.phone) return;
+        haptic('navigate');
+        if (detectedAction === 'text') {
+          Linking.openURL(`sms:${c.phone}`);
+        } else {
+          showSpeedDialCard(c, 'call');
+        }
+        const sysMsg = {
+          id: Date.now(),
+          text: detectedAction === 'text' ? `Opening SMS to ${c.name}...` : `Calling ${c.name}...`,
+          isUser: false,
+          isSystem: true,
+          ts: Date.now(),
+        };
+        setMessages(prev => {
+          const next = [...prev, sysMsg];
+          AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(next)).catch(() => {});
+          return next;
+        });
+      },
+    }));
+    options.push({ text: 'Cancel', style: 'cancel' });
+    Alert.alert(`Multiple matches for "${rawName}"`, 'Who did you mean?', options);
+    return true;
+  }, [showSpeedDialCard]);
+  // ────────────────────────────────────────────────────────────────────────────
+
   const handleSend = useCallback(async (userText, imagePayload = null) => {
     if (inFlightRef.current) return;
+    // ── Meeting mode interceptor ─────────────────────────────────────────────
+    if (!imagePayload && userText) {
+      const lower = userText.trim().toLowerCase();
+      const isMeetingTrigger =
+        lower === 'start meeting' ||
+        lower === 'meeting mode' ||
+        lower === 'start meeting mode' ||
+        lower === 'begin meeting';
+      if (isMeetingTrigger) {
+        enterMeetingMode();
+        return;
+      }
+    }
+
     // ── Dictation mode interceptor ───────────────────────────────────────────
     if (!imagePayload && userText) {
       const lower = userText.trim().toLowerCase();
@@ -1415,6 +1888,12 @@ export default function ChatScreen({ navigation, route }) {
       if (navHandled) return;
     }
 
+    // ── Speed dial interceptor ──────────────────────────────────────────────
+    if (!imagePayload && userText) {
+      const dialHandled = await handleSpeedDial(userText);
+      if (dialHandled) return;
+    }
+    // ────────────────────────────────────────────────────────────────────────
 
     // ── User-initiated draft detection ───────────────────────────────────────
     if (!imagePayload && userText) {
@@ -1451,6 +1930,18 @@ export default function ChatScreen({ navigation, route }) {
       }
     }
     // ────────────────────────────────────────────────────────────────────────
+
+    // ── Routine detection (runs before macro check) ────────────────────────
+    if (!imagePayload && userText) {
+      const routine = checkRoutine(userText);
+      if (routine) {
+        // Don't show the user message for routine triggers — announce msg is added by executeRoutine
+        inFlightRef.current = false;
+        setIsProcessing(false);
+        executeRoutine(routine);
+        return;
+      }
+    }
 
     // ── Macro detection (voice shortcuts) ───────────────────────────────────
     if (!imagePayload && userText) {
@@ -1687,10 +2178,11 @@ export default function ChatScreen({ navigation, route }) {
 
     haptic('sent');
     const now = Date.now();
-    const displayText = imagePayload ? `[Image] ${userText || 'What do you see?'}` : userText;
-    const userMsg = { id: now, text: displayText, isUser: true, ts: now };
+    const questionText = imagePayload ? (userText || 'What do you see?') : userText;
+    const displayText = imagePayload ? `[Image] ${questionText}` : userText;
+    const userMsg = { id: now, text: displayText, isUser: true, ts: now, imageUri: imagePayload ? imagePayload.uri : undefined };
     const captainMsgId = now + 1;
-    const captainMsg = { id: captainMsgId, text: '', isUser: false, modelUsed: '', complexity: '', ts: now + 1 };
+    const captainMsg = { id: captainMsgId, text: '', isUser: false, modelUsed: '', complexity: '', ts: now + 1, thinkingLabel: imagePayload ? 'Analyzing image...' : undefined };
     setStreamingMsgId(captainMsgId);
     setMessages(prev => [...prev, userMsg, captainMsg]);
 
@@ -1699,7 +2191,7 @@ export default function ChatScreen({ navigation, route }) {
       let modelUsed = '';
 
       if (imagePayload) {
-        const data = await sendVision(imagePayload.base64, imagePayload.mimeType, userText || null);
+        const data = await sendVision(imagePayload.base64, imagePayload.mimeType, questionText || null);
         responseText = data.response;
         modelUsed = data.model_used || 'Claude Vision';
         setMessages(prev => prev.map(m =>
@@ -1820,37 +2312,64 @@ export default function ChatScreen({ navigation, route }) {
       inFlightRef.current = false;
       setIsProcessing(false);
     }
-  }, [activeMode, appSettings, shouldSpeak, enterDictationMode, userLocation]);
+  }, [activeMode, appSettings, shouldSpeak, enterMeetingMode, enterDictationMode, userLocation, handleSpeedDial]);
 
   const handleCameraPress = useCallback(async () => {
     if (!ImagePicker) {
       Alert.alert('Camera Not Available', 'A app rebuild is required to enable camera. Contact support.');
       return;
     }
-    try {
-      const { status } = await ImagePicker.requestCameraPermissionsAsync();
-      if (status !== 'granted') {
-        Alert.alert('Permission Denied', 'Camera permission is required.');
-        return;
+
+    const pickImage = async (mode) => {
+      try {
+        let result;
+        if (mode === 'camera') {
+          const { status } = await ImagePicker.requestCameraPermissionsAsync();
+          if (status !== 'granted') {
+            Alert.alert('Permission Denied', 'Camera permission is required.');
+            return;
+          }
+          result = await ImagePicker.launchCameraAsync({
+            mediaTypes: ImagePicker.MediaTypeOptions.Images,
+            quality: 0.7,
+            base64: true,
+            allowsEditing: false,
+          });
+        } else {
+          const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+          if (status !== 'granted') {
+            Alert.alert('Permission Denied', 'Photo library permission is required.');
+            return;
+          }
+          result = await ImagePicker.launchImageLibraryAsync({
+            mediaTypes: ImagePicker.MediaTypeOptions.Images,
+            quality: 0.7,
+            base64: true,
+          });
+        }
+        if (!result.canceled && result.assets?.[0]) {
+          const asset = result.assets[0];
+          setPendingImage({
+            uri: asset.uri,
+            base64: asset.base64,
+            mimeType: asset.mimeType || 'image/jpeg',
+          });
+          setShowKeyboard(true);
+        }
+      } catch (e) {
+        Alert.alert('Image Error', e.message);
       }
-      const result = await ImagePicker.launchCameraAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
-        quality: 0.7,
-        base64: true,
-        allowsEditing: false,
-      });
-      if (!result.canceled && result.assets?.[0]) {
-        const asset = result.assets[0];
-        setPendingImage({
-          uri: asset.uri,
-          base64: asset.base64,
-          mimeType: asset.mimeType || 'image/jpeg',
-        });
-        setShowKeyboard(true);
-      }
-    } catch (e) {
-      Alert.alert('Camera Error', e.message);
-    }
+    };
+
+    Alert.alert(
+      'Add Image',
+      'How would you like to add an image?',
+      [
+        { text: 'Take Photo', onPress: () => pickImage('camera') },
+        { text: 'Choose from Library', onPress: () => pickImage('library') },
+        { text: 'Cancel', style: 'cancel' },
+      ]
+    );
   }, []);
 
   const handleFeedback = useCallback(async (interactionId, helpful) => {
@@ -2004,6 +2523,9 @@ export default function ChatScreen({ navigation, route }) {
               </Text>
             </View>
           ) : null}
+          <Pressable onPress={() => navigation.navigate('Search')} style={styles.settingsBtn}>
+            <MaterialIcons name="manage-search" size={22} color={theme.fgTertiary} />
+          </Pressable>
           <Pressable onPress={toggleSearch} style={styles.settingsBtn}>
             <MaterialIcons name="search" size={22} color={searchMode ? theme.accent : theme.fgTertiary} />
           </Pressable>
@@ -2026,6 +2548,17 @@ export default function ChatScreen({ navigation, route }) {
         </View>
       </View>
 
+      {/* Meeting mode banner */}
+      {meetingMode && (
+        <View style={meetingStyles.banner}>
+          <Animated.View style={[meetingStyles.bannerDot, { opacity: meetingDotAnim }]} />
+          <Text style={meetingStyles.bannerTitle}>MEETING</Text>
+          <Text style={meetingStyles.bannerTimer}>
+            {String(Math.floor(meetingDuration / 60)).padStart(2, '0')}:{String(meetingDuration % 60).padStart(2, '0')} {meetingPaused ? '• PAUSED' : '• LIVE'}
+          </Text>
+        </View>
+      )}
+
       {/* Dictation mode banner */}
       {dictationMode && (
         <View style={dictationStyles.banner}>
@@ -2033,6 +2566,17 @@ export default function ChatScreen({ navigation, route }) {
           <Text style={dictationStyles.bannerTitle}>DICTATION</Text>
           <Text style={dictationStyles.bannerSub}>Listening continuously — speak freely</Text>
         </View>
+      )}
+
+      {/* Routine active banner */}
+      {activeRoutine && (
+        <Animated.View style={[routineStyles.banner, { opacity: routineBannerAnim }]}>
+          <MaterialIcons name="play-circle-filled" size={15} color="#60a5fa" />
+          <Text style={routineStyles.bannerTitle}>{activeRoutine.name} ROUTINE</Text>
+          <Text style={routineStyles.bannerStep}>
+            Step {activeRoutine.step}/{activeRoutine.totalSteps}
+          </Text>
+        </Animated.View>
       )}
 
       {/* Weather alert banner */}
@@ -2270,6 +2814,8 @@ export default function ChatScreen({ navigation, route }) {
                 isStreaming={msg.id === streamingMsgId}
                 timestamp={msg.ts}
                 highlightText={searchMode && searchQuery.trim() ? searchQuery : undefined}
+                imageUri={msg.imageUri}
+                thinkingLabel={msg.thinkingLabel}
                 onRerun={(text) => {
                   setTextInput(text);
                   setShowKeyboard(true);
@@ -2406,8 +2952,26 @@ export default function ChatScreen({ navigation, route }) {
         </View>
       ) : null}
 
+      {/* Meeting transcript preview card */}
+      {meetingMode && meetingPreviewLines.length > 0 && (
+        <View style={meetingStyles.previewCard}>
+          <View style={meetingStyles.previewDot} />
+          <View style={{ flex: 1 }}>
+            {meetingPreviewLines.map((line, i) => (
+              <Text
+                key={i}
+                style={[meetingStyles.previewLine, i === meetingPreviewLines.length - 1 && meetingStyles.previewLineLast]}
+                numberOfLines={1}
+              >
+                {line}
+              </Text>
+            ))}
+          </View>
+        </View>
+      )}
+
             {/* Live transcription overlay card */}
-      <LiveTranscriptCard transcript={transcript} isListening={isListening} />
+      <LiveTranscriptCard transcript={transcript} isListening={isListening && !meetingMode} />
 
       {/* Context action chips */}
       {contextChips.length > 0 && (
@@ -2482,9 +3046,51 @@ export default function ChatScreen({ navigation, route }) {
         </View>
       )}
 
+      {/* Meeting generating indicator */}
+      {meetingGenerating && (
+        <View style={meetingStyles.generatingBar}>
+          <MaterialIcons name="pending" size={15} color="#ef4444" />
+          <Text style={meetingStyles.generatingText}>Generating meeting notes...</Text>
+        </View>
+      )}
+
       {/* Controls */}
       <View style={styles.controls}>
-        {showKeyboard ? (
+        {meetingMode ? (
+          <View style={meetingStyles.controls}>
+            <Pressable
+              style={({ pressed }) => [meetingStyles.pauseBtn, { opacity: pressed ? 0.75 : 1 }]}
+              onPress={() => {
+                const next = !meetingPaused;
+                meetingPausedRef.current = next;
+                setMeetingPaused(next);
+                if (!next) {
+                  // resuming — restart listening
+                  requestPermissions().then(granted => {
+                    if (granted && isMeetingModeRef.current) {
+                      setTranscript('');
+                      setIsListening(true);
+                      startListening();
+                    }
+                  });
+                } else {
+                  stopListening();
+                  setIsListening(false);
+                }
+              }}
+            >
+              <MaterialIcons name={meetingPaused ? 'mic' : 'pause'} size={20} color="#fff" />
+              <Text style={meetingStyles.pauseBtnText}>{meetingPaused ? 'Resume' : 'Pause'}</Text>
+            </Pressable>
+            <Pressable
+              style={({ pressed }) => [meetingStyles.endBtn, { opacity: pressed ? 0.75 : 1 }]}
+              onPress={handleEndMeeting}
+            >
+              <MaterialIcons name="stop-circle" size={20} color="#ef4444" />
+              <Text style={meetingStyles.endBtnText}>End Meeting</Text>
+            </Pressable>
+          </View>
+        ) : showKeyboard ? (
           <>
             {pendingImage ? (
               <View style={styles.pendingImageRow}>
@@ -2496,8 +3102,8 @@ export default function ChatScreen({ navigation, route }) {
               </View>
             ) : null}
             <View style={styles.inputRow}>
-              <Pressable onPress={() => { setShowKeyboard(false); setPendingImage(null); }} style={[styles.inputSideBtn, { backgroundColor: theme.accent + '18' }]}>
-                <MaterialIcons name="mic" size={22} color={theme.accent} />
+              <Pressable onPress={handleCameraPress} style={[styles.inputSideBtn, { backgroundColor: theme.inputBg }]}>
+                <MaterialIcons name="camera-alt" size={20} color={pendingImage ? theme.accent : theme.fgTertiary} />
               </Pressable>
               <TextInput
                 style={[styles.textInput, { backgroundColor: theme.inputBg, color: theme.fgPrimary, borderColor: theme.inputBorder }]}
@@ -2510,8 +3116,8 @@ export default function ChatScreen({ navigation, route }) {
                 autoFocus={!pendingImage}
                 editable={!isProcessing}
               />
-              <Pressable onPress={handleCameraPress} style={[styles.inputSideBtn, { backgroundColor: theme.inputBg }]}>
-                <MaterialIcons name="camera-alt" size={20} color={theme.fgTertiary} />
+              <Pressable onPress={() => { setShowKeyboard(false); setPendingImage(null); }} style={[styles.inputSideBtn, { backgroundColor: theme.accent + '18' }]}>
+                <MaterialIcons name="mic" size={22} color={theme.accent} />
               </Pressable>
               <Pressable onPress={handleTextSend} disabled={(!textInput.trim() && !pendingImage) || isProcessing} style={styles.sendBtn}>
                 <MaterialIcons name="send" size={20} color={(textInput.trim() || pendingImage) ? theme.accent : theme.fgTertiary} />
@@ -2671,6 +3277,53 @@ export default function ChatScreen({ navigation, route }) {
       </Modal>
 
       <StatusBar hidden={hudMode} />
+
+      {/* Speed Dial confirmation card */}
+      {speedDialCard && (
+        <Animated.View
+          style={[
+            speedDialStyles.card,
+            {
+              transform: [{
+                translateY: speedDialAnim.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [160, 0],
+                }),
+              }],
+              opacity: speedDialAnim,
+            },
+          ]}
+        >
+          <View style={speedDialStyles.row}>
+            {/* Avatar initials circle */}
+            <View style={[speedDialStyles.avatar, { backgroundColor: speedDialAvatarColor(speedDialCard.name) }]}>
+              <Text style={speedDialStyles.avatarText}>
+                {speedDialCard.name.trim().charAt(0).toUpperCase()}
+              </Text>
+            </View>
+            {/* Info */}
+            <View style={speedDialStyles.info}>
+              <Text style={speedDialStyles.name} numberOfLines={1}>{speedDialCard.name}</Text>
+              <Text style={speedDialStyles.phone} numberOfLines={1}>{speedDialCard.phone}</Text>
+            </View>
+            {/* Call button */}
+            <Pressable
+              onPress={() => {
+                if (speedDialDismissTimer.current) clearTimeout(speedDialDismissTimer.current);
+                dismissSpeedDialCard();
+                Linking.openURL(`tel:${speedDialCard.phone}`);
+              }}
+              style={({ pressed }) => [speedDialStyles.callBtn, { opacity: pressed ? 0.75 : 1 }]}
+            >
+              <MaterialIcons name="call" size={22} color="#fff" />
+            </Pressable>
+            {/* Cancel */}
+            <Pressable onPress={dismissSpeedDialCard} style={speedDialStyles.cancelBtn}>
+              <MaterialIcons name="close" size={18} color="#94a3b8" />
+            </Pressable>
+          </View>
+        </Animated.View>
+      )}
 
       {/* Reading Mode Overlay Bar */}
       {readingMode.active && (
@@ -3322,6 +3975,32 @@ const hudStyles = StyleSheet.create({
     fontWeight: '500',
   },
 });
+const routineStyles = StyleSheet.create({
+  banner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 9,
+    backgroundColor: 'rgba(37, 99, 235, 0.12)',
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(96, 165, 250, 0.25)',
+  },
+  bannerTitle: {
+    flex: 1,
+    color: '#60a5fa',
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 1,
+    textTransform: 'uppercase',
+  },
+  bannerStep: {
+    color: '#93c5fd',
+    fontSize: 11,
+    fontWeight: '500',
+  },
+});
+
 const dictationStyles = StyleSheet.create({
   banner: {
     flexDirection: 'row',
@@ -3444,6 +4123,134 @@ const dictationStyles = StyleSheet.create({
   },
 });
 
+const meetingStyles = StyleSheet.create({
+  banner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginHorizontal: 16,
+    marginBottom: 4,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    backgroundColor: 'rgba(185, 28, 28, 0.90)',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(239, 68, 68, 0.6)',
+  },
+  bannerDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: '#fff',
+    flexShrink: 0,
+  },
+  bannerTitle: {
+    color: '#fff',
+    fontSize: 13,
+    fontWeight: '800',
+    letterSpacing: 1.5,
+  },
+  bannerTimer: {
+    flex: 1,
+    color: 'rgba(255,255,255,0.85)',
+    fontSize: 12,
+    fontWeight: '600',
+    textAlign: 'right',
+    letterSpacing: 0.5,
+  },
+  previewCard: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+    marginHorizontal: 16,
+    marginBottom: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    backgroundColor: 'rgba(185, 28, 28, 0.08)',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(239, 68, 68, 0.2)',
+  },
+  previewDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+    backgroundColor: '#ef4444',
+    marginTop: 4,
+    flexShrink: 0,
+  },
+  previewLine: {
+    color: 'rgba(255,255,255,0.5)',
+    fontSize: 12,
+    lineHeight: 18,
+    fontStyle: 'italic',
+  },
+  previewLineLast: {
+    color: 'rgba(255,255,255,0.85)',
+    fontSize: 13,
+    fontWeight: '500',
+    fontStyle: 'normal',
+  },
+  controls: {
+    flexDirection: 'row',
+    gap: 12,
+    paddingHorizontal: 24,
+    paddingVertical: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  pauseBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.2)',
+    backgroundColor: 'rgba(255,255,255,0.08)',
+  },
+  pauseBtnText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  endBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderRadius: 12,
+    borderWidth: 1.5,
+    borderColor: '#ef4444',
+    backgroundColor: 'rgba(239, 68, 68, 0.1)',
+  },
+  endBtnText: {
+    color: '#ef4444',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  generatingBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginHorizontal: 16,
+    marginBottom: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    backgroundColor: 'rgba(239, 68, 68, 0.08)',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(239, 68, 68, 0.2)',
+  },
+  generatingText: {
+    color: '#ef4444',
+    fontSize: 13,
+    fontStyle: 'italic',
+  },
+});
+
 const readingBarStyles = StyleSheet.create({
   bar: {
     position: 'absolute',
@@ -3480,5 +4287,88 @@ const readingBarStyles = StyleSheet.create({
   },
   ctrlBtn: {
     padding: 6,
+  },
+});
+
+// ── Speed Dial helpers ───────────────────────────────────────────────────────
+const SPEED_DIAL_AVATAR_COLORS = [
+  '#6366f1', '#8b5cf6', '#ec4899', '#f59e0b',
+  '#10b981', '#3b82f6', '#ef4444', '#14b8a6',
+];
+
+function speedDialAvatarColor(name) {
+  if (!name) return SPEED_DIAL_AVATAR_COLORS[0];
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) hash = name.charCodeAt(i) + ((hash << 5) - hash);
+  return SPEED_DIAL_AVATAR_COLORS[Math.abs(hash) % SPEED_DIAL_AVATAR_COLORS.length];
+}
+
+const speedDialStyles = StyleSheet.create({
+  card: {
+    position: 'absolute',
+    bottom: 140,
+    left: 16,
+    right: 16,
+    zIndex: 100,
+    backgroundColor: '#0f172a',
+    borderRadius: 20,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -4 },
+    shadowOpacity: 0.4,
+    shadowRadius: 16,
+    elevation: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(99,102,241,0.25)',
+  },
+  row: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  avatar: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    justifyContent: 'center',
+    alignItems: 'center',
+    flexShrink: 0,
+  },
+  avatarText: {
+    color: '#fff',
+    fontSize: 20,
+    fontWeight: '700',
+  },
+  info: {
+    flex: 1,
+    gap: 2,
+  },
+  name: {
+    color: '#f1f5f9',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  phone: {
+    color: '#94a3b8',
+    fontSize: 13,
+  },
+  callBtn: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: '#22c55e',
+    justifyContent: 'center',
+    alignItems: 'center',
+    flexShrink: 0,
+  },
+  cancelBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: 'rgba(148,163,184,0.10)',
+    flexShrink: 0,
   },
 });

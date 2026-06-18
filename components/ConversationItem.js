@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { View, Text, Animated, StyleSheet, Pressable, Alert, PanResponder } from 'react-native';
+﻿import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { View, Text, Animated, StyleSheet, Pressable, Alert, PanResponder, Image } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useTheme } from '../context/ThemeContext';
@@ -185,7 +185,7 @@ function HighlightedText({ text, highlight, style }) {
   );
 }
 
-export default function ConversationItem({ message, isUser, onFeedback, interactionId, modelUsed, complexity, confidence, isStreaming, timestamp, onRerun, highlightText, isSystem }) {
+export default function ConversationItem({ message, isUser, onFeedback, interactionId, modelUsed, complexity, confidence, isStreaming, timestamp, onRerun, highlightText, isSystem, imageUri, thinkingLabel }) {
   const { theme } = useTheme();
   const [feedbackGiven, setFeedbackGiven] = useState(null);
   const [copied, setCopied] = useState(false);
@@ -352,12 +352,19 @@ export default function ConversationItem({ message, isUser, onFeedback, interact
             </>
           ) : (
             <View style={styles.messageContent}>
-              <HighlightedText
-                text={message}
-                highlight={highlightText}
-                style={[styles.messageText, { color: isUser ? '#fff' : theme.fgSecondary }]}
-              />
-              {isStreaming && !isUser && (
+              {imageUri ? (
+                <Image source={{ uri: imageUri }} style={styles.inlineImage} resizeMode="cover" />
+              ) : null}
+              {thinkingLabel && !message ? (
+                <Text style={[styles.thinkingLabel, { color: theme.fgTertiary }]}>{thinkingLabel}</Text>
+              ) : (
+                <HighlightedText
+                  text={message}
+                  highlight={highlightText}
+                  style={[styles.messageText, { color: isUser ? '#fff' : theme.fgSecondary }]}
+                />
+              )}
+              {isStreaming && !isUser && !thinkingLabel && (
                 <Animated.Text style={[styles.cursor, { color: theme.accent, opacity: cursorOpacity }]}>
                   │
                 </Animated.Text>
@@ -560,6 +567,17 @@ const styles = StyleSheet.create({
     borderColor: 'transparent',
     paddingHorizontal: 0,
     paddingVertical: 0,
+  },
+  inlineImage: {
+    width: 60,
+    height: 60,
+    borderRadius: 8,
+    marginBottom: 6,
+  },
+  thinkingLabel: {
+    fontSize: 13,
+    fontStyle: 'italic',
+    opacity: 0.6,
   },
 });
 

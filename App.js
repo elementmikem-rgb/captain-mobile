@@ -9,6 +9,7 @@ import ActionsScreen from './screens/ActionsScreen';
 import InsightsScreen from './screens/InsightsScreen';
 import ActivityLogScreen from './screens/ActivityLogScreen';
 import OnboardingScreen from './screens/OnboardingScreen';
+import SearchScreen from './screens/SearchScreen';
 import { ThemeProvider, useTheme } from './context/ThemeContext';
 
 const Stack = createNativeStackNavigator();
@@ -90,6 +91,11 @@ function AppNavigator() {
               headerTintColor: theme.fgPrimary,
               headerShadowVisible: false,
             }}
+          />
+          <Stack.Screen
+            name="Search"
+            component={SearchScreen}
+            options={{ headerShown: false }}
           />
         </Stack.Navigator>
       </NavigationContainer>
