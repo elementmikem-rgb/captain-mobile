@@ -30,6 +30,8 @@ import {
   getDocuments,
   getBirthdays,
   getBookmarks,
+  getFollowups,
+  deleteFollowup,
 } from '../services/api';
 
 function Card({ icon, label, color, children, onPress, collapsible }) {
@@ -68,6 +70,7 @@ export default function ActionsScreen({ navigation }) {
   const [newNote, setNewNote] = useState('');
   const [birthdays, setBirthdays] = useState([]);
   const [bookmarks, setBookmarks] = useState([]);
+  const [followups, setFollowups] = useState([]);
   const [expenseAmount, setExpenseAmount] = useState('');
   const [expenseCategory, setExpenseCategory] = useState('other');
   const [contactQ, setContactQ] = useState('');
@@ -92,6 +95,7 @@ export default function ActionsScreen({ navigation }) {
       getBookmarks(),
       getExpenses(thirtyDaysAgo, null),
       getContacts(),
+      getFollowups(),
     ]);
 
     if (results[0].status === 'fulfilled') setBookings(results[0].value.bookings || []);
@@ -105,6 +109,7 @@ export default function ActionsScreen({ navigation }) {
     if (results[8].status === 'fulfilled') setBookmarks(results[8].value.bookmarks || []);
     if (results[9].status === 'fulfilled') setExpenseList(results[9].value.expenses || []);
     if (results[10].status === 'fulfilled') setContacts(results[10].value || { business: [], personal: [] });
+    if (results[11].status === 'fulfilled') setFollowups(results[11].value.followups || []);
     setLoading(false);
   }, []);
 
@@ -141,6 +146,15 @@ export default function ActionsScreen({ navigation }) {
     try {
       const data = await deleteReminder(id);
       setReminders(data.reminders || []);
+    } catch (e) {
+      Alert.alert('Error', e.message);
+    }
+  }, []);
+
+  const handleDeleteFollowup = useCallback(async (id) => {
+    try {
+      const data = await deleteFollowup(id);
+      setFollowups(data.followups || []);
     } catch (e) {
       Alert.alert('Error', e.message);
     }
@@ -263,6 +277,23 @@ export default function ActionsScreen({ navigation }) {
           ))
         )}
       </Card>
+
+      {/* Follow-Ups */}
+      {followups.filter(f => !f.done).length > 0 && (
+        <Card icon="update" label="Follow-Ups" color="#4ade80" collapsible>
+          {followups.filter(f => !f.done).map((f, i) => (
+            <View key={f.id || i} style={[styles.listRow, { borderBottomColor: theme.divider }]}>
+              <MaterialIcons name="circle" size={7} color="#4ade80" style={{ marginTop: 7, marginRight: 8 }} />
+              <Text style={[styles.listMain, { color: theme.fgSecondary, flex: 1 }]}>{f.text}</Text>
+              {f.id && (
+                <Pressable onPress={() => handleDeleteFollowup(f.id)} style={styles.deleteBtn} hitSlop={8}>
+                  <MaterialIcons name="check" size={16} color="#4ade80" />
+                </Pressable>
+              )}
+            </View>
+          ))}
+        </Card>
+      )}
 
       {/* Contacts */}
       <Card icon="contacts" label="Contacts" color="#a78bfa" collapsible>

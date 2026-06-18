@@ -185,12 +185,27 @@ function HighlightedText({ text, highlight, style }) {
   );
 }
 
-export default function ConversationItem({ message, isUser, onFeedback, interactionId, modelUsed, complexity, isStreaming, timestamp, onRerun, highlightText }) {
+export default function ConversationItem({ message, isUser, onFeedback, interactionId, modelUsed, complexity, isStreaming, timestamp, onRerun, highlightText, isSystem }) {
   const { theme } = useTheme();
   const [feedbackGiven, setFeedbackGiven] = useState(null);
   const [copied, setCopied] = useState(false);
   const cursorOpacity = useRef(new Animated.Value(1)).current;
   const translateX = useRef(new Animated.Value(0)).current;
+
+  // System messages render as a centered pill — no bubble, no feedback
+  if (isSystem) {
+    return (
+      <View style={systemStyles.row}>
+        <View style={systemStyles.pill}>
+          <MaterialIcons name="settings" size={11} color="#64748b" style={{ marginRight: 5 }} />
+          <Text style={systemStyles.text}>{message}</Text>
+          {timestamp ? (
+            <Text style={systemStyles.time}>{formatTime(timestamp)}</Text>
+          ) : null}
+        </View>
+      </View>
+    );
+  }
 
   const panResponder = useRef(
     PanResponder.create({
@@ -499,6 +514,34 @@ const styles = StyleSheet.create({
     borderColor: 'transparent',
     paddingHorizontal: 0,
     paddingVertical: 0,
+  },
+});
+
+const systemStyles = StyleSheet.create({
+  row: {
+    alignItems: 'center',
+    marginVertical: 6,
+    paddingHorizontal: 16,
+  },
+  pill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(100,116,139,0.10)',
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+    borderWidth: 1,
+    borderColor: 'rgba(100,116,139,0.18)',
+  },
+  text: {
+    color: '#64748b',
+    fontSize: 12,
+    fontStyle: 'italic',
+  },
+  time: {
+    color: '#475569',
+    fontSize: 10,
+    marginLeft: 8,
   },
 });
 

@@ -334,6 +334,34 @@ export async function summarizeSession(messages) {
   }
 }
 
+export async function generateDraft({ type, recipient, context, tone }) {
+  const c = await getClient();
+  try {
+    const response = await c.post('/api/draft', { type, recipient, context, tone });
+    return response.data;
+  } catch (error) {
+    throw new Error(error.response?.data?.error || 'Draft generation failed');
+  }
+}
+
+export async function getFollowups() {
+  const c = await getClient();
+  const response = await c.get('/api/followups');
+  return response.data;
+}
+
+export async function addFollowup(text) {
+  const c = await getClient();
+  const response = await c.post('/api/followups', { text });
+  return response.data;
+}
+
+export async function deleteFollowup(id) {
+  const c = await getClient();
+  const response = await c.delete(`/api/followups/${id}`);
+  return response.data;
+}
+
 export async function sendVision(imageBase64, mimeType, prompt) {
   let url = await AsyncStorage.getItem('captain_api_url') || DEFAULT_URL;
   if (url.includes('192.168.')) { url = DEFAULT_URL; }
