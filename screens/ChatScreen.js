@@ -9,10 +9,12 @@ import {
   Alert,
   TextInput,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   Linking,
   Image,
   Vibration,
+  Share,
 } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -21,7 +23,7 @@ import ConversationItem from '../components/ConversationItem';
 import MicButton from '../components/MicButton';
 import Waveform from '../components/Waveform';
 import { useTheme } from '../context/ThemeContext';
-import { sendMessage, sendMessageStream, sendFeedback, testConnection, getBriefing, getDailyBriefingStructured, registerPushToken, sendVision, getBookingsToday, getWeather, addReminder, addMemory, recallMemory, addDocument, addPersonMemory, addContact, summarizeSession } from '../services/api';
+import { sendMessage, sendMessageStream, sendFeedback, testConnection, getBriefing, getDailyBriefingStructured, registerPushToken, sendVision, getBookingsToday, getWeather, addReminder, addMemory, recallMemory, addDocument, addPersonMemory, addContact, summarizeSession, generateDraft, addFollowup } from '../services/api';
 import {
   requestPermissions,
   startListening,
@@ -416,7 +418,7 @@ function TaskCard({ task, onToggleStep, onToggleCollapse }) {
   );
 }
 
-export default function ChatScreen({ navigation }) {
+export default function ChatScreen({ navigation, route }) {
   const { theme } = useTheme();
   const [messages, setMessages] = useState([]);
   const [activeTasks, setActiveTasks] = useState({});
@@ -437,6 +439,7 @@ export default function ChatScreen({ navigation }) {
   const [notedFact, setNotedFact] = useState(null);
   const [notedRelationship, setNotedRelationship] = useState(null); // { name, label }
   const [savedContact, setSavedContact] = useState(null); // { name, phone }
+  const [queuedFollowup, setQueuedFollowup] = useState(null); // text string
   const [contextChips, setContextChips] = useState([]);
   const [rerunHint, setRerunHint] = useState(false);
   const [searchingMemory, setSearchingMemory] = useState(false);
@@ -448,8 +451,14 @@ export default function ChatScreen({ navigation }) {
   const searchInputRef = useRef(null);
   const [showSummaryBanner, setShowSummaryBanner] = useState(false);
   const [summaryLoading, setSummaryLoading] = useState(false);
+  const [draftModal, setDraftModal] = useState(null); // { draftText, recipient, type }
+  const [draftText, setDraftText] = useState('');
+  const [draftLoading, setDraftLoading] = useState(false);
   const summaryOfferedRef = useRef(new Set());
   const summaryDismissTimer = useRef(null);
+  const [weatherAlert, setWeatherAlert] = useState(null); // { alertText, severity }
+  const weatherAlertAnim = useRef(new Animated.Value(0)).current;
+  const weatherAlertDismissed = useRef(false);
   const pressStartRef = useRef(null);
   const noteModeTimerRef = useRef(null);
   const chipAnim = useRef(new Animated.Value(0)).current;
@@ -497,10 +506,56 @@ export default function ChatScreen({ navigation }) {
     }
   }, [messages]);
 
+  // Extract a name from AI response draft trigger patterns
+  const extractDraftRecipient = useCallback((text) => {
+    const patterns = [
+      /you should (?:message|text|email)\s+([A-Z][a-z]+(?:\s[A-Z][a-z]+)?)/i,
+      /reach out to\s+([A-Z][a-z]+(?:\s[A-Z][a-z]+)?)/i,
+      /let\s+([A-Z][a-z]+(?:\s[A-Z][a-z]+)?)\s+know/i,
+      /send\s+([A-Z][a-z]+(?:\s[A-Z][a-z]+)?)\s+a/i,
+    ];
+    for (const pat of patterns) {
+      const m = text.match(pat);
+      if (m) return m[1];
+    }
+    return null;
+  }, []);
+
   const computeChips = useCallback((text) => {
     const lower = text.toLowerCase();
     const specific = [];
-    if (lower.includes('remind') || lower.includes('reminder')) {
+
+    // Draft chip — detect when AI suggests messaging someone
+    const draftPatterns = [
+      /you should (?:message|text|email)\s+/i,
+      /reach out to\s+[A-Z]/i,
+      /let\s+[A-Z][a-z]+\s+know/i,
+      /send\s+[A-Z][a-z]+\s+a\s+(?:message|text|email)/i,
+    ];
+    const hasDraftTrigger = draftPatterns.some(p => p.test(text));
+    if (hasDraftTrigger) {
+      const recipient = extractDraftRecipient(text);
+      specific.push({
+        label: 'Draft?',
+        onPress: async () => {
+          setDraftLoading(true);
+          try {
+            const result = await generateDraft({
+              type: lower.includes('email') ? 'email' : 'sms',
+              recipient: recipient || undefined,
+              context: text,
+              tone: 'professional but friendly',
+            });
+            setDraftText(result.draft || '');
+            setDraftModal({ recipient: recipient || result.recipient, type: result.type || 'sms' });
+          } catch (e) {
+            Alert.alert('Draft Error', e.message);
+          } finally {
+            setDraftLoading(false);
+          }
+        },
+      });
+    } else if (lower.includes('remind') || lower.includes('reminder')) {
       specific.push({ label: 'Set Reminder', onPress: () => setTextInput('Remind me about this in 1 hour') });
     } else if (lower.includes('call') || lower.includes('phone')) {
       specific.push({ label: 'Open Contacts', onPress: () => Linking.openURL('tel:') });
@@ -513,7 +568,7 @@ export default function ChatScreen({ navigation }) {
     }
     const copyChip = { label: 'Copy', onPress: () => Clipboard.setStringAsync(text) };
     return [...specific.slice(0, 1), copyChip];
-  }, [navigation]);
+  }, [navigation, extractDraftRecipient]);
 
   useEffect(() => {
     if (streamingMsgId !== null) return;
@@ -574,6 +629,25 @@ export default function ChatScreen({ navigation }) {
         }
       }
 
+      // Inject personalized welcome after onboarding
+      const welcomeProfile = route?.params?.welcomeProfile;
+      if (welcomeProfile) {
+        const { name: uName, role: uRole, priority: uPriority, personality: uPersonality } = welcomeProfile;
+        const personalityLines = {
+          professional: `I'll keep things sharp and professional.`,
+          casual: `Let's keep things relaxed.`,
+          direct: `I'll keep it short and to the point.`,
+        };
+        const personalityLine = personalityLines[uPersonality] || '';
+        const welcomeText =
+          `Welcome, ${uName}. I'm Captain — your AI assistant. ` +
+          `As a ${uRole} focused on ${uPriority}, I've got you covered. ` +
+          personalityLine +
+          ` Say anything to get started, or ask me what I can do.`;
+        const now = Date.now();
+        setMessages([{ id: now, text: welcomeText, isUser: false, ts: now }]);
+      }
+
       const ok = await testConnection();
       setConnected(ok);
       if (ok) {
@@ -581,6 +655,19 @@ export default function ChatScreen({ navigation }) {
           const bookingCount = bRes.status === 'fulfilled' ? (bRes.value.bookings || []).length : 0;
           const weather = wRes.status === 'fulfilled' ? wRes.value : null;
           setContextInfo({ bookingCount, weather });
+
+          // Show weather alert banner if conditions warrant it
+          if (
+            !weatherAlertDismissed.current &&
+            weather?.alert?.hasAlert
+          ) {
+            setWeatherAlert({ alertText: weather.alert.alertText, severity: weather.alert.severity });
+            Animated.timing(weatherAlertAnim, {
+              toValue: 44,
+              duration: 320,
+              useNativeDriver: false,
+            }).start();
+          }
         });
       }
       if (!ok) {
@@ -822,8 +909,106 @@ export default function ChatScreen({ navigation }) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // ── Voice-controlled settings interceptor ───────────────────────────────────
+  const handleVoiceCommand = useCallback(async (text) => {
+    const lower = text.trim().toLowerCase();
+    const VOICE_COMMANDS = [
+      { match: s => s === 'turn on voice' || s === 'enable voice', setting: { voiceEnabled: true }, confirm: 'Voice enabled.' },
+      { match: s => s === 'turn off voice' || s === 'disable voice' || s === 'mute', setting: { voiceEnabled: false }, confirm: 'Voice off, sir.' },
+      { match: s => s === 'turn on ambient' || s === 'ambient mode on' || s === 'hands free', setting: { ambientMode: true }, confirm: 'Ambient mode on.' },
+      { match: s => s === 'turn off ambient' || s === 'ambient mode off', setting: { ambientMode: false }, confirm: 'Ambient mode off.' },
+      { match: s => s === 'drive mode on' || s === 'driving mode' || s === "i'm driving", setting: { driveMode: true }, confirm: 'Drive mode engaged.' },
+      { match: s => s === 'drive mode off' || s === "i've arrived" || s === 'not driving', setting: { driveMode: false }, confirm: 'Drive mode off.' },
+      { match: s => s === 'voice speed fast' || s === 'speak faster' || s === 'speed up', setting: { voiceSpeed: 1.5 }, confirm: 'Speaking faster.' },
+      { match: s => s === 'voice speed slow' || s === 'speak slower' || s === 'slow down', setting: { voiceSpeed: 0.75 }, confirm: 'Slowing down.' },
+      { match: s => s === 'voice speed normal' || s === 'normal speed', setting: { voiceSpeed: 1.0 }, confirm: 'Normal speed.' },
+      { match: s => s === 'clear chat' || s === 'clear history' || s === 'fresh start', setting: null, confirm: 'Clean slate.', action: 'clearChat' },
+      { match: s => s === 'dark mode', setting: null, confirm: 'Dark mode on.', action: 'darkMode' },
+      { match: s => s === 'light mode', setting: null, confirm: 'Light mode on.', action: 'lightMode' },
+    ];
+    const cmd = VOICE_COMMANDS.find(c => c.match(lower));
+    if (!cmd) return false;
+    if (cmd.action === 'clearChat') {
+      await AsyncStorage.removeItem(STORAGE_KEY);
+      setMessages([]);
+    } else if (cmd.action === 'darkMode' || cmd.action === 'lightMode') {
+      try {
+        const ctx = require('../context/ThemeContext');
+        if (ctx && typeof ctx.toggleTheme === 'function') ctx.toggleTheme();
+      } catch {}
+    } else if (cmd.setting) {
+      const saved = await AsyncStorage.getItem('captain_settings');
+      const current = saved ? JSON.parse(saved) : {};
+      const updated = { ...current, ...cmd.setting };
+      await AsyncStorage.setItem('captain_settings', JSON.stringify(updated));
+      setAppSettings(prev => ({ ...prev, ...cmd.setting }));
+    }
+    const sysMsg = { id: Date.now(), text: cmd.confirm, isUser: false, isSystem: true, ts: Date.now() };
+    setMessages(prev => {
+      const next = [...prev, sysMsg];
+      AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(next)).catch(() => {});
+      return next;
+    });
+    try {
+      const s = await AsyncStorage.getItem('captain_settings');
+      const parsed = s ? JSON.parse(s) : {};
+      const willSpeak = parsed.voiceEnabled !== false && !parsed.whisperMode && !parsed.meetingMode;
+      if (willSpeak) {
+        const speed = parsed.voiceSpeed || appSettings.voiceSpeed || 1.0;
+        setIsSpeaking(true);
+        await speak(cmd.confirm, speed);
+        setIsSpeaking(false);
+      }
+    } catch {}
+    return true;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [appSettings.voiceSpeed]);
+  // ────────────────────────────────────────────────────────────────────────────
+
   const handleSend = useCallback(async (userText, imagePayload = null) => {
     if (inFlightRef.current) return;
+    // ── Voice command interceptor (runs before everything else) ─────────────
+    if (!imagePayload && userText) {
+      const handled = await handleVoiceCommand(userText);
+      if (handled) return;
+    }
+
+
+    // ── User-initiated draft detection ───────────────────────────────────────
+    if (!imagePayload && userText) {
+      const draftUserPatterns = [
+        { re: /draft\s+(?:a\s+)?(?:message|text)\s+to\s+([A-Za-z]+(?:\s[A-Za-z]+)?)\s+about\s+(.+)/i, type: 'sms' },
+        { re: /write\s+(?:an?\s+)?email\s+to\s+([A-Za-z]+(?:\s[A-Za-z]+)?)\s+about\s+(.+)/i, type: 'email' },
+        { re: /write\s+(?:an?\s+)?email\s+to\s+([A-Za-z]+(?:\s[A-Za-z]+)?)/i, type: 'email' },
+        { re: /text\s+([A-Za-z]+(?:\s[A-Za-z]+)?)\s+about\s+(.+)/i, type: 'sms' },
+        { re: /draft\s+(?:an?\s+)?email\s+to\s+([A-Za-z]+(?:\s[A-Za-z]+)?)\s+about\s+(.+)/i, type: 'email' },
+        { re: /draft\s+(?:an?\s+)?email\s+to\s+([A-Za-z]+(?:\s[A-Za-z]+)?)/i, type: 'email' },
+      ];
+      for (const { re: draftRe, type: draftType } of draftUserPatterns) {
+        const draftMatch = userText.match(draftRe);
+        if (draftMatch) {
+          const draftRecipient = draftMatch[1]?.trim();
+          const draftContext = draftMatch[2]?.trim() || userText;
+          setDraftLoading(true);
+          try {
+            const result = await generateDraft({
+              type: draftType,
+              recipient: draftRecipient,
+              context: draftContext,
+              tone: 'professional but friendly',
+            });
+            setDraftText(result.draft || '');
+            setDraftModal({ recipient: draftRecipient || result.recipient, type: draftType });
+          } catch (e) {
+            Alert.alert('Draft Error', e.message);
+          } finally {
+            setDraftLoading(false);
+          }
+          return; // don't send to AI — we handled it
+        }
+      }
+    }
+    // ────────────────────────────────────────────────────────────────────────
 
     // ── Macro detection (voice shortcuts) ───────────────────────────────────
     if (!imagePayload && userText) {
@@ -877,6 +1062,7 @@ export default function ChatScreen({ navigation }) {
     setNotedFact(null);
     setNotedRelationship(null);
     setSavedContact(null);
+    setQueuedFollowup(null);
 
     const opts = {
       chatMode: activeMode,
@@ -954,6 +1140,27 @@ export default function ChatScreen({ navigation }) {
             addContact(cName, cPhone, '').catch(() => {});
             setSavedContact({ name: cName, phone: cPhone });
             setTimeout(() => setSavedContact(null), 4000);
+          }
+          break;
+        }
+      }
+
+      // Follow-up detection
+      const followupPatterns = [
+        /follow up (?:on|with|about) (.+)/i,
+        /check (?:in with|on|back with) (.+)/i,
+        /get back to (.+)/i,
+        /circle back (?:with|on|to) (.+)/i,
+        /i'll follow up/i,
+      ];
+      for (const fpat of followupPatterns) {
+        const fmatch = userText.match(fpat);
+        if (fmatch) {
+          const fuText = fmatch[1] ? fmatch[1].trim() : userText.trim();
+          if (fuText.length > 2) {
+            addFollowup(fuText).catch(() => {});
+            setQueuedFollowup(fuText);
+            setTimeout(() => setQueuedFollowup(null), 4000);
           }
           break;
         }
@@ -1293,6 +1500,41 @@ export default function ChatScreen({ navigation }) {
         </View>
       </View>
 
+      {/* Weather alert banner */}
+      {weatherAlert && (
+        <Animated.View
+          style={[
+            styles.weatherAlertBar,
+            {
+              height: weatherAlertAnim,
+              backgroundColor: weatherAlert.severity === 'high' ? 'rgba(234, 88, 12, 0.12)' : 'rgba(234, 179, 8, 0.10)',
+              borderColor: weatherAlert.severity === 'high' ? 'rgba(234, 88, 12, 0.30)' : 'rgba(234, 179, 8, 0.28)',
+            },
+          ]}
+        >
+          <MaterialIcons
+            name={weatherAlert.severity === 'high' ? 'umbrella' : 'wb-cloudy'}
+            size={15}
+            color={weatherAlert.severity === 'high' ? '#ea580c' : '#ca8a04'}
+          />
+          <Text
+            style={[styles.weatherAlertText, { color: weatherAlert.severity === 'high' ? '#ea580c' : '#ca8a04' }]}
+            numberOfLines={1}
+          >
+            {weatherAlert.alertText}
+          </Text>
+          <Pressable
+            onPress={() => {
+              weatherAlertDismissed.current = true;
+              Animated.timing(weatherAlertAnim, { toValue: 0, duration: 200, useNativeDriver: false }).start(() => setWeatherAlert(null));
+            }}
+            style={styles.weatherAlertDismiss}
+          >
+            <MaterialIcons name="close" size={14} color={weatherAlert.severity === 'high' ? '#ea580c' : '#ca8a04'} />
+          </Pressable>
+        </Animated.View>
+      )}
+
       {/* Search bar */}
       <Animated.View style={[styles.searchBar, { height: searchBarHeight, backgroundColor: theme.inputBg, borderColor: theme.inputBorder }]}>
         <MaterialIcons name="search" size={18} color={theme.fgTertiary} style={{ marginLeft: 12 }} />
@@ -1376,6 +1618,7 @@ export default function ChatScreen({ navigation }) {
               <ConversationItem
                 message={msg.text}
                 isUser={msg.isUser}
+                isSystem={msg.isSystem}
                 interactionId={msg.interactionId}
                 modelUsed={msg.modelUsed}
                 complexity={msg.complexity}
@@ -1445,6 +1688,14 @@ export default function ChatScreen({ navigation }) {
         <View style={styles.savedContactBar}>
           <MaterialIcons name="person-add" size={15} color="#38bdf8" />
           <Text style={styles.savedContactText} numberOfLines={1}>Contact saved: {savedContact.name} {savedContact.phone}</Text>
+        </View>
+      )}
+
+      {/* Follow-up queued badge */}
+      {queuedFollowup && (
+        <View style={styles.followupQueuedBar}>
+          <MaterialIcons name="update" size={15} color="#4ade80" />
+          <Text style={styles.followupQueuedText} numberOfLines={1}>Follow-up queued: {queuedFollowup}</Text>
         </View>
       )}
 
@@ -1638,9 +1889,156 @@ export default function ChatScreen({ navigation }) {
           </>
         )}
       </View>
+
+      {/* Draft loading indicator */}
+      {draftLoading && (
+        <View style={draftStyles.loadingBar}>
+          <MaterialIcons name="edit" size={15} color="#6366f1" />
+          <Text style={draftStyles.loadingText}>Generating draft...</Text>
+        </View>
+      )}
+
+      {/* Draft modal */}
+      <Modal
+        visible={!!draftModal}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setDraftModal(null)}
+      >
+        <View style={draftStyles.overlay}>
+          <View style={[draftStyles.sheet, { backgroundColor: theme.bg }]}>
+            <View style={draftStyles.sheetHeader}>
+              <MaterialIcons name="edit" size={18} color="#6366f1" />
+              <Text style={[draftStyles.sheetTitle, { color: theme.fgPrimary }]}>
+                {'Draft Message'}{draftModal?.recipient ? ` — ${draftModal.recipient}` : ''}
+              </Text>
+              <Pressable onPress={() => setDraftModal(null)} style={draftStyles.closeBtn}>
+                <MaterialIcons name="close" size={20} color={theme.fgTertiary} />
+              </Pressable>
+            </View>
+            <View style={draftStyles.typeRow}>
+              <View style={[draftStyles.typeBadge, { backgroundColor: draftModal?.type === 'email' ? 'rgba(99,102,241,0.15)' : 'rgba(52,211,153,0.15)' }]}>
+                <MaterialIcons
+                  name={draftModal?.type === 'email' ? 'email' : 'sms'}
+                  size={12}
+                  color={draftModal?.type === 'email' ? '#6366f1' : '#34d399'}
+                />
+                <Text style={[draftStyles.typeText, { color: draftModal?.type === 'email' ? '#6366f1' : '#34d399' }]}>
+                  {draftModal?.type === 'email' ? 'Email' : 'SMS'}
+                </Text>
+              </View>
+            </View>
+            <TextInput
+              style={[draftStyles.draftInput, { backgroundColor: theme.inputBg, color: theme.fgPrimary, borderColor: theme.inputBorder }]}
+              value={draftText}
+              onChangeText={setDraftText}
+              multiline
+              textAlignVertical="top"
+              autoCapitalize="sentences"
+            />
+            <View style={draftStyles.actionRow}>
+              <Pressable
+                style={({ pressed }) => [draftStyles.actionBtn, draftStyles.actionBtnCopy, { opacity: pressed ? 0.7 : 1 }]}
+                onPress={async () => {
+                  await Clipboard.setStringAsync(draftText);
+                  Alert.alert('Copied', 'Draft copied to clipboard');
+                }}
+              >
+                <MaterialIcons name="content-copy" size={16} color="#6366f1" />
+                <Text style={draftStyles.actionBtnCopyText}>Copy</Text>
+              </Pressable>
+              <Pressable
+                style={({ pressed }) => [draftStyles.actionBtn, draftStyles.actionBtnShare, { opacity: pressed ? 0.7 : 1 }]}
+                onPress={async () => {
+                  try {
+                    await Share.share({ message: draftText });
+                  } catch (e) {
+                    Alert.alert('Share Error', e.message);
+                  }
+                }}
+              >
+                <MaterialIcons name="share" size={16} color="#fff" />
+                <Text style={draftStyles.actionBtnShareText}>Share</Text>
+              </Pressable>
+              <Pressable
+                style={({ pressed }) => [draftStyles.actionBtn, draftStyles.actionBtnDismiss, { opacity: pressed ? 0.7 : 1 }]}
+                onPress={() => setDraftModal(null)}
+              >
+                <Text style={[draftStyles.actionBtnDismissText, { color: theme.fgTertiary }]}>Dismiss</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </KeyboardAvoidingView>
   );
 }
+
+
+const draftStyles = StyleSheet.create({
+  loadingBar: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    marginHorizontal: 16, marginBottom: 8,
+    paddingHorizontal: 14, paddingVertical: 8,
+    backgroundColor: 'rgba(99, 102, 241, 0.08)',
+    borderRadius: 10, borderWidth: 1, borderColor: 'rgba(99, 102, 241, 0.2)',
+  },
+  loadingText: { color: '#6366f1', fontSize: 13, fontStyle: 'italic' },
+  overlay: {
+    flex: 1,
+    justifyContent: 'flex-end',
+    backgroundColor: 'rgba(0,0,0,0.55)',
+  },
+  sheet: {
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    paddingHorizontal: 20,
+    paddingTop: 20,
+    paddingBottom: 40,
+    minHeight: 360,
+  },
+  sheetHeader: {
+    flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12,
+  },
+  sheetTitle: {
+    flex: 1, fontSize: 16, fontWeight: '700',
+  },
+  closeBtn: { padding: 4 },
+  typeRow: { marginBottom: 10 },
+  typeBadge: {
+    flexDirection: 'row', alignItems: 'center', gap: 5,
+    paddingHorizontal: 10, paddingVertical: 4,
+    borderRadius: 8, alignSelf: 'flex-start',
+  },
+  typeText: { fontSize: 11, fontWeight: '700' },
+  draftInput: {
+    borderWidth: 1, borderRadius: 12,
+    paddingHorizontal: 14, paddingVertical: 12,
+    fontSize: 15, lineHeight: 22,
+    minHeight: 140,
+    marginBottom: 16,
+  },
+  actionRow: {
+    flexDirection: 'row', gap: 10, alignItems: 'center',
+  },
+  actionBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    paddingHorizontal: 16, paddingVertical: 10, borderRadius: 10,
+  },
+  actionBtnCopy: {
+    flex: 1, borderWidth: 1, borderColor: 'rgba(99,102,241,0.4)',
+    backgroundColor: 'rgba(99,102,241,0.1)', justifyContent: 'center',
+  },
+  actionBtnCopyText: { color: '#6366f1', fontSize: 14, fontWeight: '600' },
+  actionBtnShare: {
+    flex: 1, backgroundColor: '#6366f1', justifyContent: 'center',
+  },
+  actionBtnShareText: { color: '#fff', fontSize: 14, fontWeight: '600' },
+  actionBtnDismiss: {
+    paddingHorizontal: 12, justifyContent: 'center',
+  },
+  actionBtnDismissText: { fontSize: 14 },
+});
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
@@ -1730,6 +2128,14 @@ const styles = StyleSheet.create({
     borderRadius: 10, borderWidth: 1, borderColor: 'rgba(56, 189, 248, 0.2)',
   },
   savedContactText: { flex: 1, color: '#38bdf8', fontSize: 12, fontStyle: 'italic' },
+  followupQueuedBar: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    marginHorizontal: 16, marginBottom: 8,
+    paddingHorizontal: 14, paddingVertical: 8,
+    backgroundColor: 'rgba(74, 222, 128, 0.08)',
+    borderRadius: 10, borderWidth: 1, borderColor: 'rgba(74, 222, 128, 0.2)',
+  },
+  followupQueuedText: { flex: 1, color: '#4ade80', fontSize: 12, fontStyle: 'italic' },
   rerunHintBar: {
     flexDirection: 'row', alignItems: 'center', gap: 8,
     marginHorizontal: 16, marginBottom: 8,
@@ -1842,6 +2248,25 @@ const styles = StyleSheet.create({
   searchResultText: {
     fontSize: 11,
     fontWeight: '600',
+  },
+  weatherAlertBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    overflow: 'hidden',
+    marginHorizontal: 16,
+    marginBottom: 4,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+  },
+  weatherAlertText: {
+    flex: 1,
+    fontSize: 12,
+    fontWeight: '500',
+  },
+  weatherAlertDismiss: {
+    padding: 4,
   },
 });
 
