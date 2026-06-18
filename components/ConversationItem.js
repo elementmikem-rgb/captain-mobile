@@ -150,7 +150,42 @@ function BookingCard({ data, theme }) {
   );
 }
 
-export default function ConversationItem({ message, isUser, onFeedback, interactionId, modelUsed, complexity, isStreaming, timestamp, onRerun }) {
+function HighlightedText({ text, highlight, style }) {
+  if (!highlight || !highlight.trim() || !text) {
+    return <Text style={style}>{text}</Text>;
+  }
+  const lower = text.toLowerCase();
+  const lowerHighlight = highlight.toLowerCase();
+  const parts = [];
+  let cursor = 0;
+  let idx = lower.indexOf(lowerHighlight, cursor);
+  while (idx !== -1) {
+    if (idx > cursor) {
+      parts.push({ text: text.slice(cursor, idx), match: false });
+    }
+    parts.push({ text: text.slice(idx, idx + highlight.length), match: true });
+    cursor = idx + highlight.length;
+    idx = lower.indexOf(lowerHighlight, cursor);
+  }
+  if (cursor < text.length) {
+    parts.push({ text: text.slice(cursor), match: false });
+  }
+  return (
+    <Text style={style}>
+      {parts.map((part, i) =>
+        part.match ? (
+          <Text key={i} style={{ backgroundColor: '#fbbf2440', color: '#fbbf24' }}>
+            {part.text}
+          </Text>
+        ) : (
+          <Text key={i}>{part.text}</Text>
+        )
+      )}
+    </Text>
+  );
+}
+
+export default function ConversationItem({ message, isUser, onFeedback, interactionId, modelUsed, complexity, isStreaming, timestamp, onRerun, highlightText }) {
   const { theme } = useTheme();
   const [feedbackGiven, setFeedbackGiven] = useState(null);
   const [copied, setCopied] = useState(false);
@@ -302,9 +337,11 @@ export default function ConversationItem({ message, isUser, onFeedback, interact
             </>
           ) : (
             <View style={styles.messageContent}>
-              <Text style={[styles.messageText, { color: isUser ? '#fff' : theme.fgSecondary }]}>
-                {message}
-              </Text>
+              <HighlightedText
+                text={message}
+                highlight={highlightText}
+                style={[styles.messageText, { color: isUser ? '#fff' : theme.fgSecondary }]}
+              />
               {isStreaming && !isUser && (
                 <Animated.Text style={[styles.cursor, { color: theme.accent, opacity: cursorOpacity }]}>
                   │

@@ -1,4 +1,4 @@
-﻿﻿﻿﻿﻿import React, { useState, useRef, useEffect, useCallback } from 'react';
+﻿﻿﻿import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -21,7 +21,7 @@ import ConversationItem from '../components/ConversationItem';
 import MicButton from '../components/MicButton';
 import Waveform from '../components/Waveform';
 import { useTheme } from '../context/ThemeContext';
-import { sendMessage, sendMessageStream, sendFeedback, testConnection, getBriefing, getDailyBriefingStructured, registerPushToken, sendVision, getBookingsToday, getWeather, addReminder, addMemory, recallMemory, addDocument, addPersonMemory } from '../services/api';
+import { sendMessage, sendMessageStream, sendFeedback, testConnection, getBriefing, getDailyBriefingStructured, registerPushToken, sendVision, getBookingsToday, getWeather, addReminder, addMemory, recallMemory, addDocument, addPersonMemory, addContact, summarizeSession } from '../services/api';
 import {
   requestPermissions,
   startListening,
@@ -315,9 +315,111 @@ const predStyles = StyleSheet.create({
 let ImagePicker = null;
 try { ImagePicker = require('expo-image-picker'); } catch {}
 
+// ── Task detection helpers ───────────────────────────────────────────────────
+const ACTION_VERBS = ['schedule', 'call', 'send', 'book', 'check', 'prepare', 'create', 'update', 'review', 'contact', 'confirm', 'follow', 'set up', 'write', 'get', 'find', 'buy', 'order', 'reply', 'open', 'close', 'cancel', 'submit', 'upload', 'download', 'install', 'remove', 'add', 'edit', 'delete', 'share', 'invite', 'attend', 'complete', 'finish', 'start', 'stop', 'pause', 'resume', 'fix', 'test', 'deploy', 'launch', 'research', 'draft'];
+
+function parseTaskSteps(text) {
+  if (!text) return [];
+  const lines = text.split('\n');
+  const steps = [];
+
+  // Pattern 1: "1. Step text" or "1) Step text"
+  const numberedRe = /^\s*(\d+)[.)]\s+(.+)$/;
+  // Pattern 2: "Step 1: text" or "Step 1 - text"
+  const stepLabelRe = /^\s*step\s+\d+[\s:–\-]+(.+)$/i;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+
+    const numMatch = trimmed.match(numberedRe);
+    if (numMatch) {
+      const stepText = numMatch[2].trim();
+      steps.push(stepText);
+      if (steps.length >= 8) break;
+      continue;
+    }
+
+    const stepMatch = trimmed.match(stepLabelRe);
+    if (stepMatch) {
+      const stepText = stepMatch[1].trim();
+      steps.push(stepText);
+      if (steps.length >= 8) break;
+    }
+  }
+
+  if (steps.length < 2) return [];
+
+  // Must have at least one action verb to qualify as a task list
+  const lowerAll = steps.join(' ').toLowerCase();
+  const hasAction = ACTION_VERBS.some(v => lowerAll.includes(v));
+  if (!hasAction) return [];
+
+  return steps;
+}
+
+// ── Task Card component ──────────────────────────────────────────────────────
+function TaskCard({ task, onToggleStep, onToggleCollapse }) {
+  const completedCount = task.steps.filter(s => s.done).length;
+  const total = task.steps.length;
+  const allDone = completedCount === total;
+  const progressPct = total > 0 ? completedCount / total : 0;
+
+  return (
+    <View style={taskStyles.card}>
+      {/* Progress bar */}
+      <View style={taskStyles.progressTrack}>
+        <View style={[taskStyles.progressFill, { width: `${progressPct * 100}%`, backgroundColor: allDone ? '#22c55e' : '#6366f1' }]} />
+      </View>
+
+      {/* Header row */}
+      <Pressable onPress={onToggleCollapse} style={taskStyles.header}>
+        <MaterialIcons name="assignment" size={15} color="#818cf8" />
+        <Text style={taskStyles.headerText}>Task Plan</Text>
+        <View style={taskStyles.headerRight}>
+          {allDone && (
+            <View style={taskStyles.completeBadge}>
+              <Text style={taskStyles.completeBadgeText}>Complete!</Text>
+            </View>
+          )}
+          <Text style={taskStyles.countText}>{completedCount}/{total}</Text>
+          <MaterialIcons
+            name={task.collapsed ? 'expand-more' : 'expand-less'}
+            size={18}
+            color="#818cf8"
+          />
+        </View>
+      </Pressable>
+
+      {/* Steps */}
+      {!task.collapsed && (
+        <View style={taskStyles.stepsContainer}>
+          {task.steps.map((step, idx) => (
+            <Pressable
+              key={idx}
+              onPress={() => onToggleStep(idx)}
+              style={taskStyles.stepRow}
+            >
+              <MaterialIcons
+                name={step.done ? 'check-box' : 'check-box-outline-blank'}
+                size={20}
+                color={step.done ? '#22c55e' : '#64748b'}
+              />
+              <Text style={[taskStyles.stepText, step.done && taskStyles.stepDone]} numberOfLines={3}>
+                {step.text}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+      )}
+    </View>
+  );
+}
+
 export default function ChatScreen({ navigation }) {
   const { theme } = useTheme();
   const [messages, setMessages] = useState([]);
+  const [activeTasks, setActiveTasks] = useState({});
   const [isListening, setIsListening] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
@@ -334,11 +436,20 @@ export default function ChatScreen({ navigation }) {
   const [quickReminder, setQuickReminder] = useState(null);
   const [notedFact, setNotedFact] = useState(null);
   const [notedRelationship, setNotedRelationship] = useState(null); // { name, label }
+  const [savedContact, setSavedContact] = useState(null); // { name, phone }
   const [contextChips, setContextChips] = useState([]);
   const [rerunHint, setRerunHint] = useState(false);
   const [searchingMemory, setSearchingMemory] = useState(false);
   const [voiceNoteMode, setVoiceNoteMode] = useState(false);
   const [isNoteMode, setIsNoteMode] = useState(false); // visual: green mic during long-press
+  const [searchMode, setSearchMode] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const searchBarHeight = useRef(new Animated.Value(0)).current;
+  const searchInputRef = useRef(null);
+  const [showSummaryBanner, setShowSummaryBanner] = useState(false);
+  const [summaryLoading, setSummaryLoading] = useState(false);
+  const summaryOfferedRef = useRef(new Set());
+  const summaryDismissTimer = useRef(null);
   const pressStartRef = useRef(null);
   const noteModeTimerRef = useRef(null);
   const chipAnim = useRef(new Animated.Value(0)).current;
@@ -350,6 +461,41 @@ export default function ChatScreen({ navigation }) {
     if (chipDismissTimer.current) clearTimeout(chipDismissTimer.current);
     Animated.timing(chipAnim, { toValue: 0, duration: 200, useNativeDriver: true }).start(() => setContextChips([]));
   }, [chipAnim]);
+
+  // Session summary offer — trigger at 10, 20, 30 messages
+  useEffect(() => {
+    const count = messages.length;
+    if (count < 10) return;
+    const threshold = Math.floor(count / 10) * 10;
+    if (summaryOfferedRef.current.has(threshold)) return;
+    summaryOfferedRef.current.add(threshold);
+    setShowSummaryBanner(true);
+    if (summaryDismissTimer.current) clearTimeout(summaryDismissTimer.current);
+    summaryDismissTimer.current = setTimeout(() => {
+      setShowSummaryBanner(false);
+    }, 30000);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages.length]);
+
+  const handleSummarize = useCallback(async () => {
+    setSummaryLoading(true);
+    try {
+      const last20 = messages.slice(-20).map(m => ({
+        role: m.isUser ? 'user' : 'assistant',
+        content: m.text || '',
+      }));
+      const result = await summarizeSession(last20);
+      const dateStr = new Date().toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
+      await addDocument('Session Summary ' + dateStr, result.summary);
+      if (summaryDismissTimer.current) clearTimeout(summaryDismissTimer.current);
+      setShowSummaryBanner(false);
+      setSummaryLoading(false);
+      Alert.alert('Summary saved to notes', '', [{ text: 'OK' }]);
+    } catch (e) {
+      setSummaryLoading(false);
+      Alert.alert('Could not summarize', e.message);
+    }
+  }, [messages]);
 
   const computeChips = useCallback((text) => {
     const lower = text.toLowerCase();
@@ -730,6 +876,7 @@ export default function ChatScreen({ navigation }) {
     if (chipDismissTimer.current) clearTimeout(chipDismissTimer.current);
     setNotedFact(null);
     setNotedRelationship(null);
+    setSavedContact(null);
 
     const opts = {
       chatMode: activeMode,
@@ -787,6 +934,26 @@ export default function ChatScreen({ navigation }) {
             addPersonMemory(name, pfact).catch(() => {});
             setNotedRelationship({ name, label: pfact });
             setTimeout(() => setNotedRelationship(null), 3500);
+          }
+          break;
+        }
+      }
+
+      // Contact quick-add detection
+      const contactPatterns = [
+        /add contact:?\s+(.+?),?\s+(\+?[\d\s\-()+]{7,})/i,
+        /save contact:?\s+(.+?),?\s+(\+?[\d\s\-()+]{7,})/i,
+        /new contact:?\s+(.+?),?\s+(\+?[\d\s\-()+]{7,})/i,
+      ];
+      for (const cPat of contactPatterns) {
+        const cMatch = userText.match(cPat);
+        if (cMatch) {
+          const cName = cMatch[1].trim().replace(/,\s*$/, '');
+          const cPhone = cMatch[2].trim();
+          if (cName.length > 0 && cPhone.length >= 7) {
+            addContact(cName, cPhone, '').catch(() => {});
+            setSavedContact({ name: cName, phone: cPhone });
+            setTimeout(() => setSavedContact(null), 4000);
           }
           break;
         }
@@ -880,6 +1047,18 @@ export default function ChatScreen({ navigation }) {
             });
             if (finalMessages) {
               AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(finalMessages)).catch(() => {});
+            }
+            // Task detection — runs after streaming finishes
+            const steps = parseTaskSteps(finalText);
+            if (steps.length >= 2) {
+              setActiveTasks(prev => ({
+                ...prev,
+                [captainMsgId]: {
+                  id: captainMsgId,
+                  steps: steps.map(text => ({ text, done: false })),
+                  collapsed: false,
+                },
+              }));
             }
           },
           opts
@@ -1020,6 +1199,35 @@ export default function ChatScreen({ navigation }) {
     setActiveMode(prev => prev === key ? null : key);
   }, []);
 
+  const toggleSearch = useCallback(() => {
+    setSearchMode(prev => {
+      const next = !prev;
+      Animated.timing(searchBarHeight, {
+        toValue: next ? 48 : 0,
+        duration: 250,
+        useNativeDriver: false,
+      }).start(() => {
+        if (next) searchInputRef.current?.focus();
+      });
+      if (!next) setSearchQuery('');
+      return next;
+    });
+  }, [searchBarHeight]);
+
+  const closeSearch = useCallback(() => {
+    Animated.timing(searchBarHeight, {
+      toValue: 0,
+      duration: 200,
+      useNativeDriver: false,
+    }).start();
+    setSearchMode(false);
+    setSearchQuery('');
+  }, [searchBarHeight]);
+
+  const filteredMessages = searchMode && searchQuery.trim()
+    ? messages.filter(m => m.text && m.text.toLowerCase().includes(searchQuery.toLowerCase()))
+    : messages;
+
   const activeModeObj = CHAT_MODES.find(m => m.key === activeMode);
   const effectiveDrive = appSettings.driveMode || activeMode === 'drive';
 
@@ -1066,6 +1274,16 @@ export default function ChatScreen({ navigation }) {
               <Text style={[styles.modeBadgeText, { color: '#f87171' }]}>Meeting</Text>
             </View>
           ) : null}
+          {searchMode && searchQuery.trim() ? (
+            <View style={styles.searchResultBadge}>
+              <Text style={[styles.searchResultText, { color: theme.accent }]}>
+                {filteredMessages.length} of {messages.length}
+              </Text>
+            </View>
+          ) : null}
+          <Pressable onPress={toggleSearch} style={styles.settingsBtn}>
+            <MaterialIcons name="search" size={22} color={searchMode ? theme.accent : theme.fgTertiary} />
+          </Pressable>
           <Pressable onPress={() => navigation.navigate('Actions')} style={styles.settingsBtn}>
             <MaterialIcons name="grid-view" size={22} color={theme.fgTertiary} />
           </Pressable>
@@ -1074,6 +1292,23 @@ export default function ChatScreen({ navigation }) {
           </Pressable>
         </View>
       </View>
+
+      {/* Search bar */}
+      <Animated.View style={[styles.searchBar, { height: searchBarHeight, backgroundColor: theme.inputBg, borderColor: theme.inputBorder }]}>
+        <MaterialIcons name="search" size={18} color={theme.fgTertiary} style={{ marginLeft: 12 }} />
+        <TextInput
+          ref={searchInputRef}
+          style={[styles.searchInput, { color: theme.fgPrimary }]}
+          placeholder="Search conversations..."
+          placeholderTextColor={theme.fgTertiary}
+          value={searchQuery}
+          onChangeText={setSearchQuery}
+          returnKeyType="search"
+        />
+        <Pressable onPress={closeSearch} style={styles.searchClearBtn}>
+          <MaterialIcons name="close" size={16} color={theme.fgTertiary} />
+        </Pressable>
+      </Animated.View>
 
       {/* Conversation */}
       <ScrollView
@@ -1136,24 +1371,46 @@ export default function ChatScreen({ navigation }) {
             />
           </View>
         ) : (
-          messages.map((msg) => (
-            <ConversationItem
-              key={msg.id}
-              message={msg.text}
-              isUser={msg.isUser}
-              interactionId={msg.interactionId}
-              modelUsed={msg.modelUsed}
-              complexity={msg.complexity}
-              onFeedback={handleFeedback}
-              isStreaming={msg.id === streamingMsgId}
-              timestamp={msg.ts}
-              onRerun={(text) => {
-                setTextInput(text);
-                setShowKeyboard(true);
-                setRerunHint(true);
-                setTimeout(() => setRerunHint(false), 3000);
-              }}
-            />
+          filteredMessages.map((msg) => (
+            <View key={msg.id}>
+              <ConversationItem
+                message={msg.text}
+                isUser={msg.isUser}
+                interactionId={msg.interactionId}
+                modelUsed={msg.modelUsed}
+                complexity={msg.complexity}
+                onFeedback={handleFeedback}
+                isStreaming={msg.id === streamingMsgId}
+                timestamp={msg.ts}
+                highlightText={searchMode && searchQuery.trim() ? searchQuery : undefined}
+                onRerun={(text) => {
+                  setTextInput(text);
+                  setShowKeyboard(true);
+                  setRerunHint(true);
+                  setTimeout(() => setRerunHint(false), 3000);
+                }}
+              />
+              {!msg.isUser && activeTasks[msg.id] && (
+                <TaskCard
+                  task={activeTasks[msg.id]}
+                  onToggleStep={(stepIdx) => {
+                    setActiveTasks(prev => {
+                      const t = prev[msg.id];
+                      if (!t) return prev;
+                      const newSteps = t.steps.map((s, i) => i === stepIdx ? { ...s, done: !s.done } : s);
+                      return { ...prev, [msg.id]: { ...t, steps: newSteps } };
+                    });
+                  }}
+                  onToggleCollapse={() => {
+                    setActiveTasks(prev => {
+                      const t = prev[msg.id];
+                      if (!t) return prev;
+                      return { ...prev, [msg.id]: { ...t, collapsed: !t.collapsed } };
+                    });
+                  }}
+                />
+              )}
+            </View>
           ))
         )}
         {isProcessing && <ThinkingDots color={theme.accent} />}
@@ -1180,6 +1437,14 @@ export default function ChatScreen({ navigation }) {
         <View style={styles.relationshipBar}>
           <MaterialIcons name="person-add" size={15} color="#34d399" />
           <Text style={styles.relationshipText} numberOfLines={1}>Relationship noted: {notedRelationship.name}</Text>
+        </View>
+      )}
+
+      {/* Contact saved badge */}
+      {savedContact && (
+        <View style={styles.savedContactBar}>
+          <MaterialIcons name="person-add" size={15} color="#38bdf8" />
+          <Text style={styles.savedContactText} numberOfLines={1}>Contact saved: {savedContact.name} {savedContact.phone}</Text>
         </View>
       )}
 
@@ -1241,6 +1506,30 @@ export default function ChatScreen({ navigation }) {
             </Pressable>
           ))}
         </Animated.View>
+      )}
+
+      {/* Session summary banner */}
+      {showSummaryBanner && (
+        <View style={styles.summaryBannerBar}>
+          <MaterialIcons name="save" size={15} color="#a78bfa" />
+          <Text style={styles.summaryBannerText} numberOfLines={1}>
+            {summaryLoading ? 'Summarizing...' : 'Summarize session'}
+          </Text>
+          {!summaryLoading && (
+            <Pressable onPress={handleSummarize} style={styles.summaryBannerBtn}>
+              <Text style={styles.summaryBannerBtnText}>Save</Text>
+            </Pressable>
+          )}
+          <Pressable
+            onPress={() => {
+              if (summaryDismissTimer.current) clearTimeout(summaryDismissTimer.current);
+              setShowSummaryBanner(false);
+            }}
+            style={styles.summaryBannerDismiss}
+          >
+            <MaterialIcons name="close" size={14} color="#a78bfa" />
+          </Pressable>
+        </View>
       )}
 
       {/* Controls */}
@@ -1433,6 +1722,14 @@ const styles = StyleSheet.create({
     borderRadius: 10, borderWidth: 1, borderColor: 'rgba(52, 211, 153, 0.2)',
   },
   relationshipText: { flex: 1, color: '#34d399', fontSize: 12, fontStyle: 'italic' },
+  savedContactBar: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    marginHorizontal: 16, marginBottom: 8,
+    paddingHorizontal: 14, paddingVertical: 8,
+    backgroundColor: 'rgba(56, 189, 248, 0.08)',
+    borderRadius: 10, borderWidth: 1, borderColor: 'rgba(56, 189, 248, 0.2)',
+  },
+  savedContactText: { flex: 1, color: '#38bdf8', fontSize: 12, fontStyle: 'italic' },
   rerunHintBar: {
     flexDirection: 'row', alignItems: 'center', gap: 8,
     marginHorizontal: 16, marginBottom: 8,
@@ -1517,4 +1814,135 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   contextActionChipText: { fontSize: 13, fontWeight: '600' },
+  searchBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    overflow: 'hidden',
+    marginHorizontal: 16,
+    marginBottom: 4,
+    borderRadius: 12,
+    borderWidth: 1,
+  },
+  searchInput: {
+    flex: 1,
+    fontSize: 14,
+    paddingHorizontal: 8,
+    paddingVertical: 0,
+    height: '100%',
+  },
+  searchClearBtn: {
+    padding: 10,
+  },
+  searchResultBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
+    backgroundColor: 'rgba(99,102,241,0.12)',
+  },
+  searchResultText: {
+    fontSize: 11,
+    fontWeight: '600',
+  },
+});
+
+const taskStyles = StyleSheet.create({
+  card: {
+    marginHorizontal: 16,
+    marginTop: 4,
+    marginBottom: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(99, 102, 241, 0.25)',
+    backgroundColor: 'rgba(99, 102, 241, 0.06)',
+    overflow: 'hidden',
+  },
+  progressTrack: {
+    height: 3,
+    backgroundColor: 'rgba(99, 102, 241, 0.15)',
+    width: '100%',
+  },
+  progressFill: {
+    height: 3,
+    borderRadius: 2,
+  },
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+  },
+  headerText: {
+    color: '#818cf8',
+    fontSize: 13,
+    fontWeight: '600',
+    flex: 1,
+  },
+  headerRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  countText: {
+    color: '#64748b',
+    fontSize: 12,
+    fontWeight: '500',
+  },
+  completeBadge: {
+    backgroundColor: 'rgba(34, 197, 94, 0.15)',
+    borderRadius: 6,
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderWidth: 1,
+    borderColor: 'rgba(34, 197, 94, 0.30)',
+  },
+  completeBadgeText: {
+    color: '#22c55e',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  stepsContainer: {
+    paddingHorizontal: 14,
+    paddingBottom: 12,
+    gap: 2,
+  },
+  stepRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+    paddingVertical: 6,
+  },
+  stepText: {
+    flex: 1,
+    color: '#cbd5e1',
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  stepDone: {
+    color: '#475569',
+    textDecorationLine: 'line-through',
+  },
+  summaryBannerBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginHorizontal: 16,
+    marginBottom: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 0,
+    height: 36,
+    backgroundColor: 'rgba(167, 139, 250, 0.08)',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(167, 139, 250, 0.22)',
+  },
+  summaryBannerText: { flex: 1, color: '#a78bfa', fontSize: 13, fontStyle: 'italic' },
+  summaryBannerBtn: {
+    backgroundColor: '#7c3aed',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 8,
+  },
+  summaryBannerBtnText: { color: '#fff', fontSize: 12, fontWeight: '700' },
+  summaryBannerDismiss: { padding: 2 },
 });
