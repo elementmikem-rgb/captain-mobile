@@ -261,6 +261,18 @@ export async function deleteMemory(id) {
   return response.data;
 }
 
+export async function addPersonMemory(subject, fact) {
+  const c = await getClient();
+  const response = await c.post('/api/memory/person', { subject, fact });
+  return response.data;
+}
+
+export async function getPersonMemories() {
+  const c = await getClient();
+  const response = await c.get('/api/memory/people');
+  return response.data;
+}
+
 export async function deleteReminder(id) {
   const c = await getClient();
   const response = await c.delete(`/api/reminders/${id}`);
