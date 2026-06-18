@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { View, Text, Animated, StyleSheet, Pressable, Alert } from 'react-native';
+import { View, Text, Animated, StyleSheet, Pressable, Alert, PanResponder } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useTheme } from '../context/ThemeContext';
@@ -150,11 +150,66 @@ function BookingCard({ data, theme }) {
   );
 }
 
-export default function ConversationItem({ message, isUser, onFeedback, interactionId, modelUsed, complexity, isStreaming, timestamp }) {
+export default function ConversationItem({ message, isUser, onFeedback, interactionId, modelUsed, complexity, isStreaming, timestamp, onRerun }) {
   const { theme } = useTheme();
   const [feedbackGiven, setFeedbackGiven] = useState(null);
   const [copied, setCopied] = useState(false);
   const cursorOpacity = useRef(new Animated.Value(1)).current;
+  const translateX = useRef(new Animated.Value(0)).current;
+
+  const panResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => false,
+      onMoveShouldSetPanResponder: (_, gestureState) => {
+        // Only capture horizontal swipes left on user messages
+        return isUser && Math.abs(gestureState.dx) > Math.abs(gestureState.dy) && gestureState.dx < -5;
+      },
+      onPanResponderGrant: () => {
+        translateX.setOffset(0);
+        translateX.setValue(0);
+      },
+      onPanResponderMove: (_, gestureState) => {
+        // Only allow leftward drag, clamp at -90
+        const clamped = Math.max(-90, Math.min(0, gestureState.dx));
+        translateX.setValue(clamped);
+      },
+      onPanResponderRelease: (_, gestureState) => {
+        translateX.flattenOffset();
+        const triggered = gestureState.dx < -50;
+        // Spring back to 0
+        Animated.spring(translateX, {
+          toValue: 0,
+          useNativeDriver: true,
+          tension: 100,
+          friction: 10,
+        }).start();
+        if (triggered && onRerun) {
+          onRerun(message);
+        }
+      },
+      onPanResponderTerminate: () => {
+        translateX.flattenOffset();
+        Animated.spring(translateX, {
+          toValue: 0,
+          useNativeDriver: true,
+          tension: 100,
+          friction: 10,
+        }).start();
+      },
+    })
+  ).current;
+
+  const rerunIconOpacity = translateX.interpolate({
+    inputRange: [-60, -20, 0],
+    outputRange: [1, 0.4, 0],
+    extrapolate: 'clamp',
+  });
+
+  const rerunIconScale = translateX.interpolate({
+    inputRange: [-60, -20, 0],
+    outputRange: [1, 0.7, 0.5],
+    extrapolate: 'clamp',
+  });
 
   const handleLongPress = useCallback(() => {
     Alert.alert('Message', undefined, [
@@ -201,95 +256,130 @@ export default function ConversationItem({ message, isUser, onFeedback, interact
   const card = !isUser ? detectCard(message) : null;
 
   return (
-    <Pressable
-      onLongPress={handleLongPress}
-      delayLongPress={400}
-      style={[
-        styles.container,
-        isUser
-          ? [styles.userMessage, { backgroundColor: theme.userBubble }]
-          : [
-              styles.captainMessage,
-              card ? styles.cardContainer : null,
-              !card ? { backgroundColor: theme.captainBubble, borderColor: theme.captainBorder } : null,
-            ],
-      ]}
-    >
-      {copied && (
-        <View style={styles.copiedBadge}>
-          <Text style={styles.copiedText}>Saved</Text>
-        </View>
+    <View style={styles.swipeRow} {...(isUser ? panResponder.panHandlers : {})}>
+      {/* Replay icon revealed behind the bubble as user swipes left */}
+      {isUser && (
+        <Animated.View
+          style={[
+            styles.rerunIconWrap,
+            {
+              opacity: rerunIconOpacity,
+              transform: [{ scale: rerunIconScale }],
+            },
+          ]}
+          pointerEvents="none"
+        >
+          <MaterialIcons name="replay" size={22} color={theme.accent} />
+        </Animated.View>
       )}
-      {card ? (
-        <>
-          {card.type === 'weather' && <WeatherCard data={card} theme={theme} />}
-          {card.type === 'expense' && <ExpenseCard data={card} theme={theme} />}
-          {card.type === 'reminder' && <ReminderCard data={card} theme={theme} />}
-          {card.type === 'booking' && <BookingCard data={card} theme={theme} />}
-        </>
-      ) : (
-        <View style={styles.messageContent}>
-          <Text style={[styles.messageText, { color: isUser ? '#fff' : theme.fgSecondary }]}>
-            {message}
-          </Text>
-          {isStreaming && !isUser && (
-            <Animated.Text style={[styles.cursor, { color: theme.accent, opacity: cursorOpacity }]}>
-              │
-            </Animated.Text>
+
+      <Animated.View style={isUser ? { transform: [{ translateX }] } : undefined}>
+        <Pressable
+          onLongPress={handleLongPress}
+          delayLongPress={400}
+          style={[
+            styles.container,
+            isUser
+              ? [styles.userMessage, { backgroundColor: theme.userBubble }]
+              : [
+                  styles.captainMessage,
+                  card ? styles.cardContainer : null,
+                  !card ? { backgroundColor: theme.captainBubble, borderColor: theme.captainBorder } : null,
+                ],
+          ]}
+        >
+          {copied && (
+            <View style={styles.copiedBadge}>
+              <Text style={styles.copiedText}>Saved</Text>
+            </View>
           )}
-        </View>
-      )}
-
-      {timestamp ? (
-        <Text style={[styles.timestamp, { color: isUser ? 'rgba(255,255,255,0.45)' : theme.fgTertiary }]}>
-          {formatTime(timestamp)}
-        </Text>
-      ) : null}
-
-      {!isUser && (modelUsed || complexity) ? (
-        <View style={styles.metaRow}>
-          {modelUsed ? (
-            <Text style={[styles.modelTag, { color: theme.fgTertiary }]}>{modelUsed}</Text>
-          ) : null}
-          {complexity ? (
-            <View style={[styles.complexityBadge, { backgroundColor: (COMPLEXITY_COLORS[complexity] || '#666') + '18' }]}>
-              <Text style={[styles.complexityText, { color: COMPLEXITY_COLORS[complexity] || '#666' }]}>
-                {complexity}
+          {card ? (
+            <>
+              {card.type === 'weather' && <WeatherCard data={card} theme={theme} />}
+              {card.type === 'expense' && <ExpenseCard data={card} theme={theme} />}
+              {card.type === 'reminder' && <ReminderCard data={card} theme={theme} />}
+              {card.type === 'booking' && <BookingCard data={card} theme={theme} />}
+            </>
+          ) : (
+            <View style={styles.messageContent}>
+              <Text style={[styles.messageText, { color: isUser ? '#fff' : theme.fgSecondary }]}>
+                {message}
               </Text>
+              {isStreaming && !isUser && (
+                <Animated.Text style={[styles.cursor, { color: theme.accent, opacity: cursorOpacity }]}>
+                  │
+                </Animated.Text>
+              )}
+            </View>
+          )}
+
+          {timestamp ? (
+            <Text style={[styles.timestamp, { color: isUser ? 'rgba(255,255,255,0.45)' : theme.fgTertiary }]}>
+              {formatTime(timestamp)}
+            </Text>
+          ) : null}
+
+          {!isUser && (modelUsed || complexity) ? (
+            <View style={styles.metaRow}>
+              {modelUsed ? (
+                <Text style={[styles.modelTag, { color: theme.fgTertiary }]}>{modelUsed}</Text>
+              ) : null}
+              {complexity ? (
+                <View style={[styles.complexityBadge, { backgroundColor: (COMPLEXITY_COLORS[complexity] || '#666') + '18' }]}>
+                  <Text style={[styles.complexityText, { color: COMPLEXITY_COLORS[complexity] || '#666' }]}>
+                    {complexity}
+                  </Text>
+                </View>
+              ) : null}
             </View>
           ) : null}
-        </View>
-      ) : null}
 
-      {!isUser && interactionId != null && (
-        <View style={styles.feedbackRow}>
-          <Pressable
-            onPress={() => handleFeedback(true)}
-            style={[styles.feedbackBtn, feedbackGiven === true && styles.feedbackActive]}
-          >
-            <MaterialIcons
-              name="thumb-up"
-              size={14}
-              color={feedbackGiven === true ? '#4ade80' : theme.fgTertiary}
-            />
-          </Pressable>
-          <Pressable
-            onPress={() => handleFeedback(false)}
-            style={[styles.feedbackBtn, feedbackGiven === false && styles.feedbackActiveBad]}
-          >
-            <MaterialIcons
-              name="thumb-down"
-              size={14}
-              color={feedbackGiven === false ? '#f87171' : theme.fgTertiary}
-            />
-          </Pressable>
-        </View>
-      )}
-    </Pressable>
+          {!isUser && interactionId != null && (
+            <View style={styles.feedbackRow}>
+              <Pressable
+                onPress={() => handleFeedback(true)}
+                style={[styles.feedbackBtn, feedbackGiven === true && styles.feedbackActive]}
+              >
+                <MaterialIcons
+                  name="thumb-up"
+                  size={14}
+                  color={feedbackGiven === true ? '#4ade80' : theme.fgTertiary}
+                />
+              </Pressable>
+              <Pressable
+                onPress={() => handleFeedback(false)}
+                style={[styles.feedbackBtn, feedbackGiven === false && styles.feedbackActiveBad]}
+              >
+                <MaterialIcons
+                  name="thumb-down"
+                  size={14}
+                  color={feedbackGiven === false ? '#f87171' : theme.fgTertiary}
+                />
+              </Pressable>
+            </View>
+          )}
+        </Pressable>
+      </Animated.View>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
+  swipeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    overflow: 'hidden',
+  },
+  rerunIconWrap: {
+    position: 'absolute',
+    right: 8,
+    zIndex: 0,
+    width: 32,
+    height: 32,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
   container: {
     marginVertical: 4,
     marginHorizontal: 16,
@@ -299,6 +389,7 @@ const styles = StyleSheet.create({
     maxWidth: '85%',
     borderWidth: 1,
     borderColor: 'transparent',
+    zIndex: 1,
   },
   copiedBadge: {
     position: 'absolute',

@@ -1,4 +1,4 @@
-﻿import React, { useState, useRef, useEffect, useCallback } from 'react';
+﻿﻿﻿﻿﻿import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -21,7 +21,7 @@ import ConversationItem from '../components/ConversationItem';
 import MicButton from '../components/MicButton';
 import Waveform from '../components/Waveform';
 import { useTheme } from '../context/ThemeContext';
-import { sendMessage, sendMessageStream, sendFeedback, testConnection, getBriefing, getDailyBriefingStructured, registerPushToken, sendVision, getBookingsToday, getWeather, addReminder, addMemory, recallMemory } from '../services/api';
+import { sendMessage, sendMessageStream, sendFeedback, testConnection, getBriefing, getDailyBriefingStructured, registerPushToken, sendVision, getBookingsToday, getWeather, addReminder, addMemory, recallMemory, addDocument, addPersonMemory } from '../services/api';
 import {
   requestPermissions,
   startListening,
@@ -35,6 +35,92 @@ import {
 
 const STORAGE_KEY = 'captain_messages';
 
+// ── Live Transcription Card ──────────────────────────────────────────────────
+function LiveTranscriptCard({ transcript, isListening }) {
+  const cardAnim = useRef(new Animated.Value(0)).current;
+  const dotAnim = useRef(new Animated.Value(0.4)).current;
+  const wasListening = useRef(false);
+
+  useEffect(() => {
+    if (isListening && !wasListening.current) {
+      wasListening.current = true;
+      Animated.timing(cardAnim, { toValue: 1, duration: 220, useNativeDriver: true }).start();
+    } else if (!isListening && wasListening.current) {
+      wasListening.current = false;
+      Animated.timing(cardAnim, { toValue: 0, duration: 400, useNativeDriver: true }).start();
+    }
+  }, [isListening, cardAnim]);
+
+  useEffect(() => {
+    if (!isListening) { dotAnim.setValue(0.4); return; }
+    const pulse = Animated.loop(
+      Animated.sequence([
+        Animated.timing(dotAnim, { toValue: 1, duration: 600, useNativeDriver: true }),
+        Animated.timing(dotAnim, { toValue: 0.3, duration: 600, useNativeDriver: true }),
+      ])
+    );
+    pulse.start();
+    return () => pulse.stop();
+  }, [isListening, dotAnim]);
+
+  const hasText = transcript && transcript.trim().length > 0;
+
+  return (
+    <Animated.View
+      pointerEvents="none"
+      style={[
+        liveCardStyles.card,
+        {
+          opacity: cardAnim,
+          transform: [{ translateY: cardAnim.interpolate({ inputRange: [0, 1], outputRange: [8, 0] }) }],
+        },
+      ]}
+    >
+      <Animated.View style={[liveCardStyles.dot, { opacity: dotAnim }]} />
+      <Text style={liveCardStyles.text} numberOfLines={3}>
+        {hasText ? transcript : 'Listening...'}
+      </Text>
+    </Animated.View>
+  );
+}
+
+const liveCardStyles = StyleSheet.create({
+  card: {
+    position: 'absolute',
+    bottom: 120,
+    left: 20,
+    right: 20,
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+    backgroundColor: 'rgba(0,0,0,0.75)',
+    borderRadius: 16,
+    paddingHorizontal: 18,
+    paddingVertical: 14,
+    zIndex: 100,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.35,
+    shadowRadius: 12,
+    elevation: 12,
+  },
+  dot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#4ade80',
+    marginTop: 5,
+    flexShrink: 0,
+  },
+  text: {
+    flex: 1,
+    color: '#ffffff',
+    fontSize: 16,
+    fontStyle: 'italic',
+    lineHeight: 22,
+    letterSpacing: 0.1,
+  },
+});
 const RING_SIZE = 80; // matches MicButton diameter
 
 function HUDPulse({ active, color }) {
@@ -125,6 +211,22 @@ const CHAT_MODES = [
   { key: 'wit',    icon: 'sentiment-very-satisfied', label: 'Wit', color: '#10b981' },
 ];
 
+const PREDICTIVE_SLOTS = [
+  { start: 5,  end: 8,  chips: ['Morning briefing', "Today's bookings", "What's the weather?"] },
+  { start: 8,  end: 11, chips: ['Any messages?', 'Prep for today', 'Check reminders'] },
+  { start: 11, end: 13, chips: ['Lunch note', 'Morning wrap-up', 'Expense log'] },
+  { start: 13, end: 16, chips: ['Afternoon check-in', 'Status update', 'Any calls?'] },
+  { start: 16, end: 18, chips: ['End of day wrap', "Tomorrow's prep", 'Expense summary'] },
+  { start: 18, end: 21, chips: ['Evening briefing', 'Set tomorrow reminder', 'How did today go?'] },
+  { start: 21, end: 29, chips: ['Wind down', "Tomorrow's first task", 'Goodnight briefing'] },
+];
+
+function getPredictiveChips() {
+  const h = new Date().getHours();
+  const slot = PREDICTIVE_SLOTS.find(s => h >= s.start && h < s.end);
+  return slot ? slot.chips : PREDICTIVE_SLOTS[PREDICTIVE_SLOTS.length - 1].chips;
+}
+
 function getGreeting() {
   const h = new Date().getHours();
   if (h >= 5 && h < 12) return 'Good morning, Mike';
@@ -141,6 +243,74 @@ function getCaptainGreeting() {
   if (h >= 17 && h < 21) return "Good evening. Long day? I'm here. What can I take off your plate?";
   return "Still at it. I'll keep this brief — what do you need?";
 }
+
+function PredictiveSuggestions({ onSelect, theme, disabled }) {
+  const chips = getPredictiveChips();
+  const lucky = chips[Math.floor(Math.random() * chips.length)];
+  return (
+    <View style={predStyles.wrapper}>
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={predStyles.row}
+      >
+        {chips.map((label) => (
+          <Pressable
+            key={label}
+            onPress={() => !disabled && onSelect(label)}
+            style={({ pressed }) => [
+              predStyles.chip,
+              {
+                borderColor: theme.accent,
+                backgroundColor: pressed ? theme.accent + '28' : theme.accent + '18',
+              },
+            ]}
+          >
+            <Text style={[predStyles.chipText, { color: theme.accent }]}>{label}</Text>
+          </Pressable>
+        ))}
+      </ScrollView>
+      <View style={predStyles.luckyRow}>
+        <Pressable
+          onPress={() => !disabled && onSelect(lucky)}
+          style={({ pressed }) => [
+            predStyles.luckyChip,
+            {
+              borderColor: theme.accent + '60',
+              backgroundColor: pressed ? theme.accent + '20' : theme.accent + '0c',
+            },
+          ]}
+        >
+          <MaterialIcons name="casino" size={14} color={theme.accent} style={{ opacity: 0.7 }} />
+          <Text style={[predStyles.luckyText, { color: theme.accent }]}>I'm feeling lucky</Text>
+        </Pressable>
+      </View>
+    </View>
+  );
+}
+
+const predStyles = StyleSheet.create({
+  wrapper: { width: '100%', marginTop: 20 },
+  row: { paddingHorizontal: 4, gap: 8, flexDirection: 'row', alignItems: 'center' },
+  chip: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 20,
+    borderWidth: 1,
+  },
+  chipText: { fontSize: 13, fontWeight: '600' },
+  luckyRow: { marginTop: 10, alignItems: 'center' },
+  luckyChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 18,
+    paddingVertical: 9,
+    borderRadius: 20,
+    borderWidth: 1,
+  },
+  luckyText: { fontSize: 13, fontWeight: '500' },
+});
 
 let ImagePicker = null;
 try { ImagePicker = require('expo-image-picker'); } catch {}
@@ -163,8 +333,14 @@ export default function ChatScreen({ navigation }) {
   const [contextInfo, setContextInfo] = useState(null);
   const [quickReminder, setQuickReminder] = useState(null);
   const [notedFact, setNotedFact] = useState(null);
+  const [notedRelationship, setNotedRelationship] = useState(null); // { name, label }
   const [contextChips, setContextChips] = useState([]);
+  const [rerunHint, setRerunHint] = useState(false);
   const [searchingMemory, setSearchingMemory] = useState(false);
+  const [voiceNoteMode, setVoiceNoteMode] = useState(false);
+  const [isNoteMode, setIsNoteMode] = useState(false); // visual: green mic during long-press
+  const pressStartRef = useRef(null);
+  const noteModeTimerRef = useRef(null);
   const chipAnim = useRef(new Animated.Value(0)).current;
   const chipDismissTimer = useRef(null);
   const scrollViewRef = useRef(null);
@@ -319,7 +495,15 @@ export default function ChatScreen({ navigation }) {
     setTranscript(text);
     if (event.isFinal) {
       setIsListening(false);
-      if (text.trim() && !inFlightRef.current && !isSpeaking) handleSend(text.trim());
+      setIsNoteMode(false);
+      if (text.trim() && !inFlightRef.current && !isSpeaking) {
+        if (voiceNoteMode) {
+          handleVoiceNote(text.trim());
+        } else {
+          handleSend(text.trim());
+        }
+      }
+      setVoiceNoteMode(false);
     }
   });
 
@@ -335,7 +519,30 @@ export default function ChatScreen({ navigation }) {
     setIsListening(false);
   });
 
-  const handleMicPress = useCallback(async () => {
+  const handleVoiceNote = useCallback(async (text) => {
+    try {
+      const title = text.length > 60 ? text.slice(0, 57) + '...' : text;
+      await addDocument(title, text);
+      const noteMsg = {
+        id: Date.now(),
+        text: `Voice note saved: ${text}`,
+        isUser: false,
+        modelUsed: 'Voice Note',
+        isVoiceNote: true,
+        ts: Date.now(),
+      };
+      setMessages(prev => {
+        const next = [...prev, noteMsg];
+        AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(next)).catch(() => {});
+        return next;
+      });
+      Vibration.vibrate([0, 40, 60, 40]);
+    } catch (e) {
+      Alert.alert('Note Error', 'Could not save voice note: ' + e.message);
+    }
+  }, []);
+
+  const handleMicPressIn = useCallback(async () => {
     if (isSpeaking) {
       cancelSpeech();
       setIsSpeaking(false);
@@ -351,12 +558,38 @@ export default function ChatScreen({ navigation }) {
       Alert.alert('Permission Denied', 'Microphone permission is required.');
       return;
     }
+    pressStartRef.current = Date.now();
+    setVoiceNoteMode(false);
+    setIsNoteMode(false);
+
+    if (noteModeTimerRef.current) clearTimeout(noteModeTimerRef.current);
+    noteModeTimerRef.current = setTimeout(() => {
+      setIsNoteMode(true);
+      Vibration.vibrate([0, 30, 50, 30]);
+    }, 800);
+
     Vibration.vibrate([0, 15, 30, 15]);
     playWakeChime();
     setTranscript('');
     setIsListening(true);
     startListening();
   }, [isListening, isSpeaking]);
+
+  const handleMicPressOut = useCallback(() => {
+    if (noteModeTimerRef.current) clearTimeout(noteModeTimerRef.current);
+    if (pressStartRef.current !== null) {
+      const held = Date.now() - pressStartRef.current;
+      pressStartRef.current = null;
+      if (held >= 1500) {
+        setVoiceNoteMode(true);
+      } else {
+        setVoiceNoteMode(false);
+        setIsNoteMode(false);
+      }
+    }
+  }, []);
+
+  const handleMicPress = handleMicPressIn;
 
   const shouldSpeak = useCallback(async () => {
     if (appSettings.whisperMode || appSettings.meetingMode) return false;
@@ -496,6 +729,7 @@ export default function ChatScreen({ navigation }) {
     chipAnim.setValue(0);
     if (chipDismissTimer.current) clearTimeout(chipDismissTimer.current);
     setNotedFact(null);
+    setNotedRelationship(null);
 
     const opts = {
       chatMode: activeMode,
@@ -525,6 +759,34 @@ export default function ChatScreen({ navigation }) {
             addMemory(fact).catch(() => {});
             setNotedFact(fact);
             setTimeout(() => setNotedFact(null), 3000);
+          }
+          break;
+        }
+      }
+
+      // Person / relationship detection — store as typed person memories
+      const personPatterns = [
+        {
+          re: /^([A-Z][a-z]+(?:\s[A-Z][a-z]+)?)\s+is\s+my\s+(.+)$/i,
+          extract: m => ({ name: m[1].trim(), fact: `${m[1].trim()} is Mike's ${m[2].trim()}` }),
+        },
+        {
+          re: /^remember\s+([A-Z][a-z]+(?:\s[A-Z][a-z]+)?)\s+(likes?|prefers?|hates?)\s+(.+)$/i,
+          extract: m => ({ name: m[1].trim(), fact: `${m[1].trim()} ${m[2].trim()} ${m[3].trim()}` }),
+        },
+        {
+          re: /^note\s+that\s+([A-Z][a-z]+(?:\s[A-Z][a-z]+)?)\s+(is|works at|lives in|has|owns)\s+(.+)$/i,
+          extract: m => ({ name: m[1].trim(), fact: `${m[1].trim()} ${m[2].trim()} ${m[3].trim()}` }),
+        },
+      ];
+      for (const { re: pre, extract: pextract } of personPatterns) {
+        const pmatch = userText.match(pre);
+        if (pmatch) {
+          const { name, fact: pfact } = pextract(pmatch);
+          if (pfact.length > 2) {
+            addPersonMemory(name, pfact).catch(() => {});
+            setNotedRelationship({ name, label: pfact });
+            setTimeout(() => setNotedRelationship(null), 3500);
           }
           break;
         }
@@ -764,7 +1026,7 @@ export default function ChatScreen({ navigation }) {
   const statusText = appSettings.meetingMode
     ? 'Meeting mode — silent'
     : isListening
-    ? 'Listening...'
+    ? (isNoteMode ? 'Note mode — release to save' : 'Listening...')
     : isProcessing
     ? 'Thinking...'
     : isSpeaking
@@ -864,6 +1126,14 @@ export default function ChatScreen({ navigation }) {
               <MaterialIcons name="wb-sunny" size={18} color="#ffb347" />
               <Text style={styles.emptyBriefingText}>Get your briefing</Text>
             </Pressable>
+            <PredictiveSuggestions
+              theme={theme}
+              disabled={isProcessing}
+              onSelect={(label) => {
+                setTextInput(label);
+                handleSend(label);
+              }}
+            />
           </View>
         ) : (
           messages.map((msg) => (
@@ -877,6 +1147,12 @@ export default function ChatScreen({ navigation }) {
               onFeedback={handleFeedback}
               isStreaming={msg.id === streamingMsgId}
               timestamp={msg.ts}
+              onRerun={(text) => {
+                setTextInput(text);
+                setShowKeyboard(true);
+                setRerunHint(true);
+                setTimeout(() => setRerunHint(false), 3000);
+              }}
             />
           ))
         )}
@@ -899,6 +1175,22 @@ export default function ChatScreen({ navigation }) {
         </View>
       )}
 
+      {/* Relationship noted badge — person memory stored */}
+      {notedRelationship && (
+        <View style={styles.relationshipBar}>
+          <MaterialIcons name="person-add" size={15} color="#34d399" />
+          <Text style={styles.relationshipText} numberOfLines={1}>Relationship noted: {notedRelationship.name}</Text>
+        </View>
+      )}
+
+      {/* Rerun hint — shown after swipe-to-rerun populates the input */}
+      {rerunHint && (
+        <View style={styles.rerunHintBar}>
+          <MaterialIcons name="replay" size={15} color={theme.accent} />
+          <Text style={[styles.rerunHintText, { color: theme.accent }]}>Tap send to re-run</Text>
+        </View>
+      )}
+
       {/* Quick reminder chip */}
       {quickReminder && !isProcessing && (
         <View style={styles.quickReminderBar}>
@@ -915,15 +1207,23 @@ export default function ChatScreen({ navigation }) {
 
       {/* Listening bar — waveform + transcript */}
       {isListening ? (
-        <View style={styles.transcriptBar}>
-          <Waveform isActive={isListening} color="#ff6b35" />
+        <View style={[styles.transcriptBar, isNoteMode && styles.transcriptBarNote]}>
+          <Waveform isActive={isListening} color={isNoteMode ? '#22c55e' : '#ff6b35'} />
           {transcript ? (
-            <Text style={styles.transcriptText} numberOfLines={1}>{transcript}</Text>
+            <Text style={[styles.transcriptText, isNoteMode && styles.transcriptTextNote]} numberOfLines={1}>{transcript}</Text>
           ) : (
-            <Text style={[styles.transcriptText, { opacity: 0.5 }]}>Listening...</Text>
+            <Text style={[styles.transcriptText, { opacity: 0.5 }, isNoteMode && styles.transcriptTextNote]}>
+              {isNoteMode ? 'Note mode — speak your note...' : 'Listening...'}
+            </Text>
+          )}
+          {isNoteMode && (
+            <MaterialIcons name="note-add" size={16} color="#22c55e" />
           )}
         </View>
       ) : null}
+
+            {/* Live transcription overlay card */}
+      <LiveTranscriptCard transcript={transcript} isListening={isListening} />
 
       {/* Context action chips */}
       {contextChips.length > 0 && (
@@ -1001,7 +1301,7 @@ export default function ChatScreen({ navigation }) {
               })}
             </View>
 
-            <Text style={[styles.statusText, { color: isListening ? '#ff6b35' : theme.fgTertiary }]}>
+            <Text style={[styles.statusText, { color: isNoteMode ? '#22c55e' : isListening ? '#ff6b35' : theme.fgTertiary }]}>
               {statusText}
             </Text>
 
@@ -1011,15 +1311,21 @@ export default function ChatScreen({ navigation }) {
               </Pressable>
 
               <View style={styles.micWrapper}>
-                <HUDPulse active={isListening || isSpeaking} color={theme.accent} />
+                <HUDPulse active={isListening || isSpeaking} color={isNoteMode ? '#22c55e' : theme.accent} />
                 <View style={{ zIndex: 1 }}>
-                  <MicButton
-                    onPress={handleMicPress}
+                  <Pressable
+                    onPressIn={handleMicPressIn}
+                    onPressOut={handleMicPressOut}
                     disabled={isProcessing}
-                    isListening={isListening}
-                    isSpeaking={isSpeaking}
-                    color={theme.accent}
-                  />
+                  >
+                    <MicButton
+                      onPress={handleMicPress}
+                      disabled={isProcessing}
+                      isListening={isListening}
+                      isSpeaking={isSpeaking}
+                      color={isNoteMode ? '#22c55e' : theme.accent}
+                    />
+                  </Pressable>
                 </View>
               </View>
 
@@ -1027,6 +1333,12 @@ export default function ChatScreen({ navigation }) {
                 <MaterialIcons name="keyboard" size={22} color={theme.fgTertiary} />
               </Pressable>
             </View>
+
+            {!isListening && (
+              <Text style={[styles.holdHintText, { color: theme.fgTertiary }]}>
+                Hold for note
+              </Text>
+            )}
 
             {messages.length > 0 && (
               <Pressable onPress={handleClear} style={styles.clearBtn}>
@@ -1113,6 +1425,22 @@ const styles = StyleSheet.create({
     borderRadius: 10, borderWidth: 1, borderColor: 'rgba(129, 140, 248, 0.2)',
   },
   notedText: { flex: 1, color: '#818cf8', fontSize: 12, fontStyle: 'italic' },
+  relationshipBar: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    marginHorizontal: 16, marginBottom: 8,
+    paddingHorizontal: 14, paddingVertical: 8,
+    backgroundColor: 'rgba(52, 211, 153, 0.08)',
+    borderRadius: 10, borderWidth: 1, borderColor: 'rgba(52, 211, 153, 0.2)',
+  },
+  relationshipText: { flex: 1, color: '#34d399', fontSize: 12, fontStyle: 'italic' },
+  rerunHintBar: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    marginHorizontal: 16, marginBottom: 8,
+    paddingHorizontal: 14, paddingVertical: 8,
+    backgroundColor: 'rgba(99, 102, 241, 0.08)',
+    borderRadius: 10, borderWidth: 1, borderColor: 'rgba(99, 102, 241, 0.2)',
+  },
+  rerunHintText: { fontSize: 12, fontWeight: '500' },
   transcriptBar: {
     flexDirection: 'row', alignItems: 'center', gap: 8,
     marginHorizontal: 16, marginBottom: 8,
@@ -1132,6 +1460,12 @@ const styles = StyleSheet.create({
   },
   modeChipText: { fontSize: 11, fontWeight: '600' },
   statusText: { fontSize: 13, marginBottom: 16, fontWeight: '500' },
+  holdHintText: { fontSize: 10, marginTop: 8, opacity: 0.6 },
+  transcriptBarNote: {
+    backgroundColor: 'rgba(34, 197, 94, 0.08)',
+    borderColor: 'rgba(34, 197, 94, 0.20)',
+  },
+  transcriptTextNote: { color: '#22c55e' },
   controlRow: { flexDirection: 'row', alignItems: 'center', gap: 24 },
   micWrapper: {
     justifyContent: 'center',
