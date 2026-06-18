@@ -21,6 +21,7 @@ const DEFAULT_SETTINGS = {
   voiceEnabled: true,
   autoListen: false,
   ambientMode: false,
+  shakeToActivate: true,
   voiceSpeed: 1.0,
   autoPlayBriefing: true,
   morningBriefingTime: '7:00 AM',
@@ -37,6 +38,7 @@ const DEFAULT_SETTINGS = {
   whisperMode: false,
   meetingMode: false,
   focusMode: false,
+  useLocation: false,
 };
 
 const PERSONALITIES = [
@@ -385,6 +387,14 @@ export default function SettingsScreen({ navigation }) {
             thumbColor={settings.ambientMode ? theme.switchThumbOn : theme.switchThumbOff}
           />
         </SettingRow>
+        <SettingRow icon="vibration" label="Shake to activate">
+          <Switch
+            value={settings.shakeToActivate}
+            onValueChange={v => updateSetting('shakeToActivate', v)}
+            trackColor={{ false: theme.switchTrackOff, true: theme.switchTrackOn }}
+            thumbColor={settings.shakeToActivate ? theme.switchThumbOn : theme.switchThumbOff}
+          />
+        </SettingRow>
         <View style={[styles.settingRow, { borderBottomColor: theme.divider }]}>
           <View style={styles.settingLeft}>
             <MaterialIcons name="speed" size={18} color={theme.fgTertiary} />
@@ -461,6 +471,22 @@ export default function SettingsScreen({ navigation }) {
             trackColor={{ false: theme.switchTrackOff, true: '#f8717140' }}
             thumbColor={settings.doNotDisturb ? '#f87171' : theme.switchThumbOff} />
         </SettingRow>
+      </View>
+
+      {/* ── Privacy ── */}
+      <View style={s()}>
+        <Text style={[styles.sectionTitle, { color: theme.accent }]}>Privacy</Text>
+        <SettingRow icon="location-on" label="Use my location">
+          <Switch
+            value={settings.useLocation}
+            onValueChange={v => updateSetting('useLocation', v)}
+            trackColor={{ false: theme.switchTrackOff, true: theme.switchTrackOn }}
+            thumbColor={settings.useLocation ? theme.switchThumbOn : theme.switchThumbOff}
+          />
+        </SettingRow>
+        <Text style={[styles.subLabel, { color: theme.fgTertiary, marginTop: 4 }]}>
+          When enabled, Captain uses your real location for weather and context. Off by default.
+        </Text>
       </View>
 
       {/* ── Integrations ── */}

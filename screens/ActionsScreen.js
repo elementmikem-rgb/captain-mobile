@@ -257,24 +257,51 @@ export default function ActionsScreen({ navigation }) {
         {reminders.length === 0 ? (
           <Text style={[styles.emptyText, { color: theme.fgTertiary }]}>No reminders set</Text>
         ) : (
-          reminders.slice(0, 8).map((r, i) => (
-            <View key={r.id || i} style={[styles.listRow, { borderBottomColor: theme.divider }]}>
-              <MaterialIcons name="circle" size={7} color="#fb923c" style={{ marginTop: 7, marginRight: 8 }} />
-              <View style={{ flex: 1 }}>
-                <Text style={[styles.listMain, { color: theme.fgSecondary }]}>{r.text}</Text>
-                {r.trigger_at && (
-                  <Text style={[styles.listSub, { color: theme.fgTertiary }]}>
-                    {new Date(r.trigger_at).toLocaleString()}
-                  </Text>
+          reminders.slice(0, 8).map((r, i) => {
+            const isBlock = r.duration != null && r.duration > 0;
+            // Bar width: 15min=20%, 30min=40%, 60min=60%, 120min=80%, 240min+=100%
+            const barPct = isBlock ? Math.min(100, Math.round((r.duration / 240) * 100)) : 0;
+            const durationLabel = isBlock
+              ? r.duration >= 60
+                ? `${r.duration / 60 === Math.floor(r.duration / 60) ? r.duration / 60 : (r.duration / 60).toFixed(1)} hr block`
+                : `${r.duration} min block`
+              : null;
+            return (
+              <View key={r.id || i} style={[styles.listRow, { borderBottomColor: theme.divider }]}>
+                <MaterialIcons
+                  name={isBlock ? 'access-time' : 'circle'}
+                  size={isBlock ? 14 : 7}
+                  color={isBlock ? '#60a5fa' : '#fb923c'}
+                  style={{ marginTop: isBlock ? 4 : 7, marginRight: 8 }}
+                />
+                <View style={{ flex: 1 }}>
+                  {isBlock && (
+                    <Text style={[styles.listSub, { color: '#60a5fa', marginBottom: 3 }]}>
+                      [{durationLabel}] {r.text}
+                    </Text>
+                  )}
+                  {!isBlock && (
+                    <Text style={[styles.listMain, { color: theme.fgSecondary }]}>{r.text}</Text>
+                  )}
+                  {isBlock && (
+                    <View style={styles.durationBarTrack}>
+                      <View style={[styles.durationBar, { width: `${barPct}%` }]} />
+                    </View>
+                  )}
+                  {r.trigger_at && (
+                    <Text style={[styles.listSub, { color: theme.fgTertiary }]}>
+                      {new Date(r.trigger_at).toLocaleString()}
+                    </Text>
+                  )}
+                </View>
+                {r.id && (
+                  <Pressable onPress={() => handleDeleteReminder(r.id)} style={styles.deleteBtn} hitSlop={8}>
+                    <MaterialIcons name="close" size={14} color={theme.fgTertiary} />
+                  </Pressable>
                 )}
               </View>
-              {r.id && (
-                <Pressable onPress={() => handleDeleteReminder(r.id)} style={styles.deleteBtn} hitSlop={8}>
-                  <MaterialIcons name="close" size={14} color={theme.fgTertiary} />
-                </Pressable>
-              )}
-            </View>
-          ))
+            );
+          })
         )}
       </Card>
 
@@ -514,6 +541,13 @@ export default function ActionsScreen({ navigation }) {
               <Text style={[styles.listMain, { color: theme.fgSecondary }]} numberOfLines={2}>{n.content || n.title}</Text>
               <Text style={[styles.listSub, { color: theme.fgTertiary }]}>{n.title}</Text>
             </View>
+            <Pressable
+              onPress={() => navigation.navigate('Chat', { readText: n.content || n.title || '' })}
+              hitSlop={8}
+              style={styles.readBtn}
+            >
+              <MaterialIcons name="volume-up" size={16} color="#a78bfa" />
+            </Pressable>
           </View>
         ))}
         {notes.length === 0 && (
@@ -655,6 +689,15 @@ const styles = StyleSheet.create({
   weatherWind: { fontSize: 13 },
   deleteBtn: { padding: 6 },
   contactAction: { padding: 6 },
+  readBtn: { padding: 6, marginLeft: 4 },
+  durationBarTrack: {
+    height: 6, borderRadius: 3, width: '100%',
+    backgroundColor: 'rgba(96, 165, 250, 0.15)', overflow: 'hidden',
+    marginVertical: 4,
+  },
+  durationBar: {
+    height: '100%', borderRadius: 3, backgroundColor: '#60a5fa',
+  },
   analyticsWrap: { paddingHorizontal: 16, paddingBottom: 14 },
   analyticsChips: {
     flexDirection: 'row', gap: 8, marginBottom: 16,

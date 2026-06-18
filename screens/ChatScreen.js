@@ -18,13 +18,14 @@ import {
   StatusBar,
 } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
+import { Accelerometer } from 'expo-sensors';
 import { MaterialIcons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import ConversationItem from '../components/ConversationItem';
 import MicButton from '../components/MicButton';
 import Waveform from '../components/Waveform';
 import { useTheme } from '../context/ThemeContext';
-import { sendMessage, sendMessageStream, sendFeedback, testConnection, getBriefing, getDailyBriefingStructured, registerPushToken, sendVision, getBookingsToday, getWeather, addReminder, addMemory, recallMemory, addDocument, addPersonMemory, addContact, summarizeSession, generateDraft, addFollowup, getSuggestions } from '../services/api';
+import { sendMessage, sendMessageStream, sendFeedback, testConnection, getBriefing, getDailyBriefingStructured, registerPushToken, sendVision, getBookingsToday, getWeather, addReminder, addMemory, recallMemory, addDocument, addPersonMemory, addContact, summarizeSession, generateDraft, addFollowup, getSuggestions, getDocuments } from '../services/api';
 import {
   requestPermissions,
   startListening,
@@ -319,6 +320,9 @@ const predStyles = StyleSheet.create({
 let ImagePicker = null;
 try { ImagePicker = require('expo-image-picker'); } catch {}
 
+let Location = null;
+try { Location = require('expo-location'); } catch {}
+
 // ── Task detection helpers ───────────────────────────────────────────────────
 const ACTION_VERBS = ['schedule', 'call', 'send', 'book', 'check', 'prepare', 'create', 'update', 'review', 'contact', 'confirm', 'follow', 'set up', 'write', 'get', 'find', 'buy', 'order', 'reply', 'open', 'close', 'cancel', 'submit', 'upload', 'download', 'install', 'remove', 'add', 'edit', 'delete', 'share', 'invite', 'attend', 'complete', 'finish', 'start', 'stop', 'pause', 'resume', 'fix', 'test', 'deploy', 'launch', 'research', 'draft'];
 
@@ -433,7 +437,9 @@ export default function ChatScreen({ navigation, route }) {
   const [textInput, setTextInput] = useState('');
   const [showKeyboard, setShowKeyboard] = useState(false);
   const [activeMode, setActiveMode] = useState(null);
-  const [appSettings, setAppSettings] = useState({ driveMode: false, whisperMode: false, meetingMode: false, ambientMode: false, voiceSpeed: 1.0, personality: 'casual' });
+  const [appSettings, setAppSettings] = useState({ driveMode: false, whisperMode: false, meetingMode: false, ambientMode: false, voiceSpeed: 1.0, personality: 'casual', shakeToActivate: true });
+  const [shakeToast, setShakeToast] = useState(false);
+  const shakeLastRef = useRef(0);
   const [pendingImage, setPendingImage] = useState(null);
   const [streamingMsgId, setStreamingMsgId] = useState(null);
   const [connected, setConnected] = useState(null);
@@ -443,6 +449,7 @@ export default function ChatScreen({ navigation, route }) {
   const [notedRelationship, setNotedRelationship] = useState(null); // { name, label }
   const [savedContact, setSavedContact] = useState(null); // { name, phone }
   const [queuedFollowup, setQueuedFollowup] = useState(null); // text string
+  const [timeBlockConfirmed, setTimeBlockConfirmed] = useState(false);
   const [contextChips, setContextChips] = useState([]);
   const [suggestions, setSuggestions] = useState([]);
   const [suggestionsLoading, setSuggestionsLoading] = useState(false);
@@ -452,6 +459,11 @@ export default function ChatScreen({ navigation, route }) {
   const [searchingMemory, setSearchingMemory] = useState(false);
   const [voiceNoteMode, setVoiceNoteMode] = useState(false);
   const [isNoteMode, setIsNoteMode] = useState(false); // visual: green mic during long-press
+  const [dictationMode, setDictationMode] = useState(false);
+  const [dictationText, setDictationText] = useState('');
+  const dictationScrollRef = useRef(null);
+  const dictationTimerRef = useRef(null);
+  const isDictationModeRef = useRef(false);
   const [searchMode, setSearchMode] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const searchBarHeight = useRef(new Animated.Value(0)).current;
@@ -467,15 +479,30 @@ export default function ChatScreen({ navigation, route }) {
   const [weatherAlert, setWeatherAlert] = useState(null); // { alertText, severity }
   const weatherAlertAnim = useRef(new Animated.Value(0)).current;
   const weatherAlertDismissed = useRef(false);
+  const [userLocation, setUserLocation] = useState(null); // { lat, lon, city }
   const [hudMode, setHudMode] = useState(false);
   const hudAnim = useRef(new Animated.Value(0)).current;
   const pressStartRef = useRef(null);
   const noteModeTimerRef = useRef(null);
   const chipAnim = useRef(new Animated.Value(0)).current;
   const chipDismissTimer = useRef(null);
+  const dictationDotAnim = useRef(new Animated.Value(1)).current;
   const scrollViewRef = useRef(null);
   const inFlightRef = useRef(false);
   const spokenGreeting = useRef(false);
+
+  // ── Reading Mode state ───────────────────────────────────────────────────────
+  const [readingMode, setReadingMode] = useState({
+    active: false,
+    text: '',
+    sentences: [],
+    currentIdx: 0,
+    paused: false,
+  });
+  const readingOverlayAnim = useRef(new Animated.Value(0)).current;
+  const readingTokenRef = useRef(0);
+  // ────────────────────────────────────────────────────────────────────────────
+
   const dismissChips = useCallback(() => {
     if (chipDismissTimer.current) clearTimeout(chipDismissTimer.current);
     Animated.timing(chipAnim, { toValue: 0, duration: 200, useNativeDriver: true }).start(() => setContextChips([]));
@@ -670,6 +697,7 @@ export default function ChatScreen({ navigation, route }) {
           ambientMode: !!parsed.ambientMode,
           voiceSpeed: parsed.voiceSpeed || 1.0,
           personality: parsed.personality || 'casual',
+          shakeToActivate: parsed.shakeToActivate !== false,
         });
       }
     } catch {}
@@ -684,6 +712,51 @@ export default function ChatScreen({ navigation, route }) {
     setIsListening(true);
     startListening();
   }, []);
+
+  // ── Shake-to-activate ────────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!appSettings.shakeToActivate) {
+      Accelerometer.removeAllListeners();
+      return;
+    }
+
+    Accelerometer.setUpdateInterval(100);
+
+    const subscription = Accelerometer.addListener(({ x, y, z }) => {
+      const magnitude = Math.sqrt(x * x + y * y + z * z);
+      if (magnitude < 2.5) return;
+
+      const now = Date.now();
+      if (now - shakeLastRef.current < 2000) return; // debounce 2 s
+      shakeLastRef.current = now;
+
+      // Don't interrupt an active session
+      setIsListening(currentListening => {
+        setIsSpeaking(currentSpeaking => {
+          if (!currentListening && !currentSpeaking) {
+            requestPermissions().then(granted => {
+              if (!granted) return;
+              haptic('wake');
+              playWakeChime();
+              setTranscript('');
+              setIsListening(true);
+              startListening();
+              setShakeToast(true);
+              setTimeout(() => setShakeToast(false), 1000);
+            });
+          }
+          return currentSpeaking;
+        });
+        return currentListening;
+      });
+    });
+
+    return () => {
+      subscription.remove();
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [appSettings.shakeToActivate]);
+  // ────────────────────────────────────────────────────────────────────────────
 
   useEffect(() => {
     (async () => {
@@ -717,6 +790,25 @@ export default function ChatScreen({ navigation, route }) {
         const now = Date.now();
         setMessages([{ id: now, text: welcomeText, isUser: false, ts: now }]);
       }
+
+      // Location fetch — only if user has opted in
+      try {
+        const locSettings = await AsyncStorage.getItem('captain_settings');
+        const locParsed = locSettings ? JSON.parse(locSettings) : {};
+        if (locParsed.useLocation && Location) {
+          const { status } = await Location.requestForegroundPermissionsAsync();
+          if (status === 'granted') {
+            const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+            const { latitude, longitude } = pos.coords;
+            let city = null;
+            try {
+              const geo = await Location.reverseGeocodeAsync({ latitude, longitude });
+              city = geo[0]?.city || geo[0]?.subregion || null;
+            } catch {}
+            setUserLocation({ lat: latitude, lon: longitude, city });
+          }
+        }
+      } catch {}
 
       const ok = await testConnection();
       setConnected(ok);
@@ -793,9 +885,50 @@ export default function ChatScreen({ navigation, route }) {
     scrollViewRef.current?.scrollToEnd({ animated: true });
   }, [messages]);
 
+  // Handle readText param from ActionsScreen "Read" button
+  useEffect(() => {
+    const readText = route?.params?.readText;
+    if (readText && readText.trim()) {
+      // Small delay to let the screen finish mounting
+      setTimeout(() => startReadingMode(readText), 600);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [route?.params?.readText]);
+
   useSpeechRecognitionEvent('result', (event) => {
     const text = event.results[0]?.transcript || '';
     setTranscript(text);
+
+    if (isDictationModeRef.current) {
+      // In dictation mode: accumulate interim results into dictationText
+      if (text.trim()) {
+        if (event.isFinal) {
+          // Append confirmed chunk to dictation text and restart listening
+          setDictationText(prev => {
+            const separator = prev.trim().length > 0 ? ' ' : '';
+            return prev + separator + text.trim();
+          });
+          setTranscript('');
+          // Auto-restart listening to keep it continuous
+          setTimeout(() => {
+            if (isDictationModeRef.current) {
+              startListening();
+              setIsListening(true);
+            }
+          }, 100);
+        }
+      } else if (event.isFinal) {
+        // Silent final — just restart
+        setTimeout(() => {
+          if (isDictationModeRef.current) {
+            startListening();
+            setIsListening(true);
+          }
+        }, 100);
+      }
+      return;
+    }
+
     if (event.isFinal) {
       setIsListening(false);
       setIsNoteMode(false);
@@ -811,6 +944,17 @@ export default function ChatScreen({ navigation, route }) {
   });
 
   useSpeechRecognitionEvent('error', (event) => {
+    if (isDictationModeRef.current) {
+      // In dictation mode: silently restart on errors (no-speech is expected during pauses)
+      setTranscript('');
+      setTimeout(() => {
+        if (isDictationModeRef.current) {
+          startListening();
+          setIsListening(true);
+        }
+      }, 300);
+      return;
+    }
     setIsListening(false);
     setTranscript('');
     if (event.error !== 'no-speech') {
@@ -819,6 +963,7 @@ export default function ChatScreen({ navigation, route }) {
   });
 
   useSpeechRecognitionEvent('end', () => {
+    if (isDictationModeRef.current) return; // dictation manages its own restart
     setIsListening(false);
   });
 
@@ -845,6 +990,40 @@ export default function ChatScreen({ navigation, route }) {
     }
   }, []);
 
+  const enterDictationMode = useCallback(async () => {
+    isDictationModeRef.current = true;
+    setDictationMode(true);
+    setDictationText('');
+    setTranscript('');
+    haptic('wake');
+    // Start pulsing dot animation
+    dictationDotAnim.setValue(1);
+    Animated.loop(
+      Animated.sequence([
+        Animated.timing(dictationDotAnim, { toValue: 0.15, duration: 700, useNativeDriver: true }),
+        Animated.timing(dictationDotAnim, { toValue: 1, duration: 700, useNativeDriver: true }),
+      ])
+    ).start();
+    const granted = await requestPermissions();
+    if (granted) {
+      setIsListening(true);
+      startListening();
+    }
+  }, [dictationDotAnim]);
+
+  const exitDictationMode = useCallback(() => {
+    isDictationModeRef.current = false;
+    setDictationMode(false);
+    setDictationText('');
+    setTranscript('');
+    dictationDotAnim.stopAnimation();
+    dictationDotAnim.setValue(1);
+    stopListening();
+    setIsListening(false);
+    setVoiceNoteMode(false);
+    setIsNoteMode(false);
+  }, [dictationDotAnim]);
+
   const handleMicPressIn = useCallback(async () => {
     if (isSpeaking) {
       cancelSpeech();
@@ -866,20 +1045,35 @@ export default function ChatScreen({ navigation, route }) {
     setIsNoteMode(false);
 
     if (noteModeTimerRef.current) clearTimeout(noteModeTimerRef.current);
+    if (dictationTimerRef.current) clearTimeout(dictationTimerRef.current);
+
+    // At 800ms: show note-mode indicator
     noteModeTimerRef.current = setTimeout(() => {
       setIsNoteMode(true);
       haptic('saved');
     }, 800);
+
+    // At 3000ms: enter dictation mode
+    dictationTimerRef.current = setTimeout(() => {
+      stopListening();
+      setIsListening(false);
+      setIsNoteMode(false);
+      setVoiceNoteMode(false);
+      pressStartRef.current = null; // prevent pressOut from triggering voice note
+      haptic('wake');
+      enterDictationMode();
+    }, 3000);
 
     haptic('wake');
     playWakeChime();
     setTranscript('');
     setIsListening(true);
     startListening();
-  }, [isListening, isSpeaking]);
+  }, [isListening, isSpeaking, enterDictationMode]);
 
   const handleMicPressOut = useCallback(() => {
     if (noteModeTimerRef.current) clearTimeout(noteModeTimerRef.current);
+    if (dictationTimerRef.current) clearTimeout(dictationTimerRef.current);
     if (pressStartRef.current !== null) {
       const held = Date.now() - pressStartRef.current;
       pressStartRef.current = null;
@@ -978,6 +1172,102 @@ export default function ChatScreen({ navigation, route }) {
     return MACROS.find(m => m.triggers.some(t => lower === t));
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // ── Reading Mode helpers ─────────────────────────────────────────────────────
+  const splitSentencesForReading = useCallback((text) => {
+    const protected_ = text
+      .replace(/\b(Mr|Mrs|Ms|Dr|Prof|Sr|Jr|St|Ave|Blvd|vs|etc|approx|dept|est)\./gi, '$1\x00')
+      .replace(/\b([A-Z])\./g, '$1\x00');
+    const parts = protected_.split(/(?<=[.!?])\s+/);
+    return parts.map(s => s.replace(/\x00/g, '.').trim()).filter(s => s.length > 0);
+  }, []);
+
+  const startReadingMode = useCallback(async (text) => {
+    if (!text || !text.trim()) return;
+    const sentences = splitSentencesForReading(text);
+    const token = ++readingTokenRef.current;
+    setReadingMode({ active: true, text, sentences, currentIdx: 0, paused: false });
+    readingOverlayAnim.setValue(0);
+    Animated.timing(readingOverlayAnim, { toValue: 1, duration: 250, useNativeDriver: true }).start();
+    for (let i = 0; i < sentences.length; i++) {
+      if (readingTokenRef.current !== token) return;
+      setReadingMode(prev => ({ ...prev, currentIdx: i }));
+      await speak(sentences[i], appSettings.voiceSpeed);
+      if (readingTokenRef.current !== token) return;
+    }
+    Animated.timing(readingOverlayAnim, { toValue: 0, duration: 400, useNativeDriver: true }).start(() => {
+      setReadingMode({ active: false, text: '', sentences: [], currentIdx: 0, paused: false });
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [splitSentencesForReading, appSettings.voiceSpeed, readingOverlayAnim]);
+
+  const pauseReading = useCallback(() => {
+    cancelSpeech();
+    setReadingMode(prev => ({ ...prev, paused: true }));
+  }, []);
+
+  const resumeReading = useCallback(async () => {
+    const { sentences, currentIdx } = readingMode;
+    if (!sentences.length) return;
+    const token = ++readingTokenRef.current;
+    setReadingMode(prev => ({ ...prev, paused: false }));
+    for (let i = currentIdx; i < sentences.length; i++) {
+      if (readingTokenRef.current !== token) return;
+      setReadingMode(prev => ({ ...prev, currentIdx: i }));
+      await speak(sentences[i], appSettings.voiceSpeed);
+      if (readingTokenRef.current !== token) return;
+    }
+    Animated.timing(readingOverlayAnim, { toValue: 0, duration: 400, useNativeDriver: true }).start(() => {
+      setReadingMode({ active: false, text: '', sentences: [], currentIdx: 0, paused: false });
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [readingMode, appSettings.voiceSpeed, readingOverlayAnim]);
+
+  const stopReading = useCallback(() => {
+    readingTokenRef.current++;
+    cancelSpeech();
+    Animated.timing(readingOverlayAnim, { toValue: 0, duration: 250, useNativeDriver: true }).start(() => {
+      setReadingMode({ active: false, text: '', sentences: [], currentIdx: 0, paused: false });
+    });
+  }, [readingOverlayAnim]);
+
+  const handleReadCommand = useCallback(async (userText) => {
+    const lower = userText.trim().toLowerCase();
+    const readThisMatch = userText.match(/^read\s+(?:this|aloud)\s*:\s*(.+)$/is);
+    if (readThisMatch) {
+      const content = readThisMatch[1].trim();
+      if (content) { startReadingMode(content); return true; }
+    }
+    if (lower === 'read my notes' || lower === 'read my note') {
+      try {
+        const data = await getDocuments();
+        const docs = data.documents || [];
+        if (docs.length === 0) {
+          const sysMsg = { id: Date.now(), text: 'No notes found to read.', isUser: false, isSystem: true, ts: Date.now() };
+          setMessages(prev => { const n = [...prev, sysMsg]; AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(n)).catch(() => {}); return n; });
+          return true;
+        }
+        const content = (docs[0].content || docs[0].title || '').trim();
+        if (content) startReadingMode(content);
+      } catch (e) {
+        Alert.alert('Read Error', e.message);
+      }
+      return true;
+    }
+    if (lower === 'read back' || lower === 'read that back' || lower === 'read it back') {
+      const lastAssistant = [...messages].reverse().find(m => !m.isUser && m.text && !m.isSystem);
+      if (lastAssistant && lastAssistant.text) {
+        startReadingMode(lastAssistant.text);
+      } else {
+        const sysMsg = { id: Date.now(), text: 'Nothing to read back yet.', isUser: false, isSystem: true, ts: Date.now() };
+        setMessages(prev => { const n = [...prev, sysMsg]; AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(n)).catch(() => {}); return n; });
+      }
+      return true;
+    }
+    return false;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages, startReadingMode]);
+  // ────────────────────────────────────────────────────────────────────────────
 
   // ── Voice-controlled settings interceptor ───────────────────────────────────
   const handleVoiceCommand = useCallback(async (text) => {
@@ -1093,6 +1383,26 @@ export default function ChatScreen({ navigation, route }) {
   }, [hudMode, hudAnim]);
   const handleSend = useCallback(async (userText, imagePayload = null) => {
     if (inFlightRef.current) return;
+    // ── Dictation mode interceptor ───────────────────────────────────────────
+    if (!imagePayload && userText) {
+      const lower = userText.trim().toLowerCase();
+      const isDictationTrigger =
+        lower === 'dictate' ||
+        lower === 'dictation mode' ||
+        lower === 'take notes' ||
+        lower === 'start dictation';
+      if (isDictationTrigger) {
+        enterDictationMode();
+        return;
+      }
+    }
+
+    // ── Reading mode interceptor ────────────────────────────────────────────
+    if (!imagePayload && userText) {
+      const readHandled = await handleReadCommand(userText);
+      if (readHandled) return;
+    }
+
     // ── Voice command interceptor (runs before everything else) ─────────────
     if (!imagePayload && userText) {
       const handled = await handleVoiceCommand(userText);
@@ -1204,6 +1514,7 @@ export default function ChatScreen({ navigation, route }) {
       chatMode: activeMode,
       driveMode: appSettings.driveMode || activeMode === 'drive',
       personality: appSettings.personality || 'casual',
+      location: userLocation || null,
     };
 
     if (!imagePayload && userText) {
@@ -1301,6 +1612,31 @@ export default function ChatScreen({ navigation, route }) {
             setQueuedFollowup(fuText);
             setTimeout(() => setQueuedFollowup(null), 4000);
           }
+          break;
+        }
+      }
+
+      // Time block detection — "block 2 hours for boat maintenance" / "set aside 30 minutes for calls"
+      const tbPatterns = [
+        /\b(?:block|reserve)\s+(\d+)\s*(hours?|hrs?|minutes?|mins?)\s+for\s+(.+?)(?:\s+(?:at|tomorrow|this\s+afternoon|this\s+morning|this\s+evening)\s*.*)?\s*$/i,
+        /\bset\s+aside\s+(\d+)\s*(hours?|hrs?|minutes?|mins?)\s+for\s+(.+?)(?:\s+(?:at|tomorrow|this\s+afternoon|this\s+morning|this\s+evening)\s*.*)?\s*$/i,
+      ];
+      const timeOptPattern = /\b(?:at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?|tomorrow|this\s+afternoon|this\s+morning|this\s+evening)\b/i;
+      for (const tbPat of tbPatterns) {
+        const tbMatch = userText.match(tbPat);
+        if (tbMatch) {
+          const tbDuration = tbMatch[1];
+          const tbUnit = tbMatch[2].toLowerCase();
+          const tbTask = tbMatch[3].trim();
+          const tbTimeMatch = userText.match(timeOptPattern);
+          const tbTime = tbTimeMatch ? tbTimeMatch[0] : null;
+          const tbUnitNorm = /^h/.test(tbUnit) ? 'hour' : 'minute';
+          const tbCount = parseInt(tbDuration, 10);
+          const tbLabel = tbCount === 1 ? tbUnitNorm : tbUnitNorm + 's';
+          let tbMsg = `Create a time block: ${tbDuration} ${tbLabel} for ${tbTask}`;
+          if (tbTime) tbMsg += ` at ${tbTime}`;
+          tbMsg += '. Confirm when done.';
+          userText = tbMsg;
           break;
         }
       }
@@ -1413,6 +1749,15 @@ export default function ChatScreen({ navigation, route }) {
                 },
               }));
             }
+            // Time block confirmation — show badge when AI confirms a time block was created
+            const tbLower = finalText.toLowerCase();
+            const isTimeBlockConfirm = tbLower.includes('time block') ||
+              (tbLower.includes('blocked') && (tbLower.includes('hour') || tbLower.includes('minute')));
+            if (isTimeBlockConfirm) {
+              haptic('complete');
+              setTimeBlockConfirmed(true);
+              setTimeout(() => setTimeBlockConfirmed(false), 4000);
+            }
             // Smart suggestions — fetch AI-generated follow-up chips
             if (finalText.length > 30) {
               setSuggestionsLoading(true);
@@ -1475,7 +1820,7 @@ export default function ChatScreen({ navigation, route }) {
       inFlightRef.current = false;
       setIsProcessing(false);
     }
-  }, [activeMode, appSettings, shouldSpeak]);
+  }, [activeMode, appSettings, shouldSpeak, enterDictationMode, userLocation]);
 
   const handleCameraPress = useCallback(async () => {
     if (!ImagePicker) {
@@ -1598,7 +1943,9 @@ export default function ChatScreen({ navigation, route }) {
   const effectiveDrive = appSettings.driveMode || activeMode === 'drive';
 
   const isNavigating = isProcessing && lastUserMsgRef.current && /^(go to|open |show )/i.test(lastUserMsgRef.current);
-  const statusText = appSettings.meetingMode
+  const statusText = dictationMode
+    ? 'Dictation — listening continuously'
+    : appSettings.meetingMode
     ? 'Meeting mode — silent'
     : isNavigating
     ? 'Navigating...'
@@ -1679,6 +2026,15 @@ export default function ChatScreen({ navigation, route }) {
         </View>
       </View>
 
+      {/* Dictation mode banner */}
+      {dictationMode && (
+        <View style={dictationStyles.banner}>
+          <Animated.View style={[dictationStyles.bannerDot, { opacity: dictationDotAnim }]} />
+          <Text style={dictationStyles.bannerTitle}>DICTATION</Text>
+          <Text style={dictationStyles.bannerSub}>Listening continuously — speak freely</Text>
+        </View>
+      )}
+
       {/* Weather alert banner */}
       {weatherAlert && (
         <Animated.View
@@ -1731,10 +2087,118 @@ export default function ChatScreen({ navigation, route }) {
         </Pressable>
       </Animated.View>
 
+      {/* Dictation panel -- replaces message list while active */}
+      {dictationMode && (
+        <View style={dictationStyles.panel}>
+          <ScrollView
+            ref={dictationScrollRef}
+            style={dictationStyles.scrollArea}
+            contentContainerStyle={dictationStyles.scrollContent}
+            onContentSizeChange={() =>
+              dictationScrollRef.current?.scrollToEnd({ animated: true })
+            }
+          >
+            <Text style={dictationStyles.transcriptText}>
+              {dictationText || ''}
+              {transcript ? (
+                <Text style={dictationStyles.interimText}>
+                  {(dictationText ? ' ' : '') + transcript}
+                </Text>
+              ) : null}
+              {!dictationText && !transcript ? (
+                <Text style={dictationStyles.placeholderText}>
+                  {'Start speaking -- your words will appear here...'}
+                </Text>
+              ) : null}
+            </Text>
+          </ScrollView>
+          <View style={dictationStyles.controls}>
+            <Pressable
+              style={({ pressed }) => [
+                dictationStyles.ctrlBtn,
+                dictationStyles.ctrlBtnSave,
+                { opacity: pressed ? 0.75 : 1 },
+              ]}
+              onPress={async () => {
+                const fullText = (
+                  dictationText + (transcript ? ' ' + transcript : '')
+                ).trim();
+                if (!fullText) {
+                  exitDictationMode();
+                  return;
+                }
+                try {
+                  const time = new Date().toLocaleTimeString([], {
+                    hour: '2-digit',
+                    minute: '2-digit',
+                  });
+                  await addDocument('Dictation ' + time, fullText);
+                  haptic('saved');
+                  exitDictationMode();
+                  Alert.alert('Saved', 'Dictation saved as a note.');
+                } catch (e) {
+                  Alert.alert('Save Error', e.message);
+                }
+              }}
+            >
+              <MaterialIcons name="save" size={16} color="#fff" />
+              <Text style={dictationStyles.ctrlBtnSaveText}>Save as Note</Text>
+            </Pressable>
+            <Pressable
+              style={({ pressed }) => [
+                dictationStyles.ctrlBtn,
+                dictationStyles.ctrlBtnSend,
+                { opacity: pressed ? 0.75 : 1 },
+              ]}
+              onPress={() => {
+                const fullText = (
+                  dictationText + (transcript ? ' ' + transcript : '')
+                ).trim();
+                exitDictationMode();
+                if (fullText) handleSend(fullText);
+              }}
+            >
+              <MaterialIcons name="send" size={16} color="#fff" />
+              <Text style={dictationStyles.ctrlBtnSendText}>Send to Captain</Text>
+            </Pressable>
+            <Pressable
+              style={({ pressed }) => [
+                dictationStyles.ctrlBtn,
+                dictationStyles.ctrlBtnCopy,
+                { opacity: pressed ? 0.75 : 1 },
+              ]}
+              onPress={async () => {
+                const fullText = (
+                  dictationText + (transcript ? ' ' + transcript : '')
+                ).trim();
+                if (fullText) {
+                  await Clipboard.setStringAsync(fullText);
+                  haptic('saved');
+                }
+              }}
+            >
+              <MaterialIcons name="content-copy" size={16} color="#3b82f6" />
+              <Text style={dictationStyles.ctrlBtnCopyText}>Copy</Text>
+            </Pressable>
+            <Pressable
+              style={({ pressed }) => [
+                dictationStyles.ctrlBtn,
+                dictationStyles.ctrlBtnCancel,
+                { opacity: pressed ? 0.75 : 1 },
+              ]}
+              onPress={exitDictationMode}
+            >
+              <MaterialIcons name="close" size={16} color="#94a3b8" />
+              <Text style={dictationStyles.ctrlBtnCancelText}>Cancel</Text>
+            </Pressable>
+          </View>
+        </View>
+      )}
+
       {/* Conversation */}
       <ScrollView
         ref={scrollViewRef}
-        style={styles.conversation}
+        style={[styles.conversation, dictationMode && { display: "none" }]}
         contentContainerStyle={styles.conversationContent}
       >
         {messages.length === 0 ? (
@@ -1886,6 +2350,15 @@ export default function ChatScreen({ navigation, route }) {
         </View>
       )}
 
+
+      {/* Time blocked badge */}
+      {timeBlockConfirmed && (
+        <View style={styles.timeBlockBar}>
+          <MaterialIcons name='access-time' size={15} color='#60a5fa' />
+          <Text style={styles.timeBlockText}>Time blocked</Text>
+        </View>
+      )}
+
       {/* Rerun hint — shown after swipe-to-rerun populates the input */}
       {rerunHint && (
         <View style={styles.rerunHintBar}>
@@ -1905,6 +2378,14 @@ export default function ChatScreen({ navigation, route }) {
           <Pressable onPress={() => setQuickReminder(null)} style={styles.quickReminderDismiss}>
             <MaterialIcons name="close" size={14} color="#fb923c" />
           </Pressable>
+        </View>
+      )}
+
+      {/* Shake-to-activate toast */}
+      {shakeToast && (
+        <View style={styles.shakeToastBar}>
+          <MaterialIcons name="vibration" size={15} color="#4ade80" />
+          <Text style={styles.shakeToastText}>Listening...</Text>
         </View>
       )}
 
@@ -2191,6 +2672,35 @@ export default function ChatScreen({ navigation, route }) {
 
       <StatusBar hidden={hudMode} />
 
+      {/* Reading Mode Overlay Bar */}
+      {readingMode.active && (
+        <Animated.View
+          style={[readingBarStyles.bar, { opacity: readingOverlayAnim }]}
+          pointerEvents="box-none"
+        >
+          <Text style={readingBarStyles.progress} numberOfLines={1}>
+            {readingMode.sentences.length > 0
+              ? `Sentence ${readingMode.currentIdx + 1} of ${readingMode.sentences.length}`
+              : ''}
+          </Text>
+          <Text style={readingBarStyles.title}>Reading Mode</Text>
+          <View style={readingBarStyles.ctrlRow}>
+            {readingMode.paused ? (
+              <Pressable onPress={resumeReading} hitSlop={8} style={readingBarStyles.ctrlBtn}>
+                <MaterialIcons name="play-arrow" size={22} color="#a78bfa" />
+              </Pressable>
+            ) : (
+              <Pressable onPress={pauseReading} hitSlop={8} style={readingBarStyles.ctrlBtn}>
+                <MaterialIcons name="pause" size={22} color="#a78bfa" />
+              </Pressable>
+            )}
+            <Pressable onPress={stopReading} hitSlop={8} style={readingBarStyles.ctrlBtn}>
+              <MaterialIcons name="stop" size={22} color="#f87171" />
+            </Pressable>
+          </View>
+        </Animated.View>
+      )}
+
       {/* HUD Mode Overlay */}
       {hudMode && (
         <Animated.View
@@ -2441,6 +2951,14 @@ const styles = StyleSheet.create({
     borderRadius: 10, borderWidth: 1, borderColor: 'rgba(74, 222, 128, 0.2)',
   },
   followupQueuedText: { flex: 1, color: '#4ade80', fontSize: 12, fontStyle: 'italic' },
+  timeBlockBar: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    marginHorizontal: 16, marginBottom: 8,
+    paddingHorizontal: 14, paddingVertical: 8,
+    backgroundColor: 'rgba(96, 165, 250, 0.08)',
+    borderRadius: 10, borderWidth: 1, borderColor: 'rgba(96, 165, 250, 0.2)',
+  },
+  timeBlockText: { color: '#60a5fa', fontSize: 12, fontWeight: '600' },
   rerunHintBar: {
     flexDirection: 'row', alignItems: 'center', gap: 8,
     marginHorizontal: 16, marginBottom: 8,
@@ -2449,6 +2967,14 @@ const styles = StyleSheet.create({
     borderRadius: 10, borderWidth: 1, borderColor: 'rgba(99, 102, 241, 0.2)',
   },
   rerunHintText: { fontSize: 12, fontWeight: '500' },
+  shakeToastBar: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    marginHorizontal: 16, marginBottom: 8,
+    paddingHorizontal: 14, paddingVertical: 8,
+    backgroundColor: 'rgba(74, 222, 128, 0.08)',
+    borderRadius: 10, borderWidth: 1, borderColor: 'rgba(74, 222, 128, 0.2)',
+  },
+  shakeToastText: { flex: 1, color: '#4ade80', fontSize: 13, fontStyle: 'italic' },
   transcriptBar: {
     flexDirection: 'row', alignItems: 'center', gap: 8,
     marginHorizontal: 16, marginBottom: 8,
@@ -2794,5 +3320,165 @@ const hudStyles = StyleSheet.create({
     color: 'rgba(255,255,255,0.4)',
     fontSize: 12,
     fontWeight: '500',
+  },
+});
+const dictationStyles = StyleSheet.create({
+  banner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginHorizontal: 16,
+    marginBottom: 4,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    backgroundColor: 'rgba(30, 58, 138, 0.85)',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(59, 130, 246, 0.4)',
+  },
+  bannerDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: '#ef4444',
+    flexShrink: 0,
+  },
+  bannerTitle: {
+    color: '#fff',
+    fontSize: 13,
+    fontWeight: '800',
+    letterSpacing: 1.5,
+  },
+  bannerSub: {
+    flex: 1,
+    color: 'rgba(255,255,255,0.6)',
+    fontSize: 11,
+    fontWeight: '500',
+  },
+  panel: {
+    flex: 1,
+    marginHorizontal: 0,
+  },
+  scrollArea: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.0)',
+  },
+  scrollContent: {
+    padding: 20,
+    paddingBottom: 12,
+    flexGrow: 1,
+  },
+  transcriptText: {
+    color: '#f1f5f9',
+    fontSize: 17,
+    lineHeight: 28,
+    fontWeight: '400',
+  },
+  interimText: {
+    color: 'rgba(148, 163, 184, 0.8)',
+    fontStyle: 'italic',
+  },
+  placeholderText: {
+    color: 'rgba(100, 116, 139, 0.6)',
+    fontStyle: 'italic',
+    fontSize: 16,
+  },
+  controls: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255,255,255,0.06)',
+  },
+  ctrlBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+    borderRadius: 10,
+  },
+  ctrlBtnSave: {
+    backgroundColor: '#16a34a',
+    flex: 1,
+    justifyContent: 'center',
+  },
+  ctrlBtnSaveText: {
+    color: '#fff',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  ctrlBtnSend: {
+    backgroundColor: '#2563eb',
+    flex: 1,
+    justifyContent: 'center',
+  },
+  ctrlBtnSendText: {
+    color: '#fff',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  ctrlBtnCopy: {
+    borderWidth: 1,
+    borderColor: 'rgba(59,130,246,0.4)',
+    backgroundColor: 'rgba(59,130,246,0.1)',
+    paddingHorizontal: 16,
+  },
+  ctrlBtnCopyText: {
+    color: '#3b82f6',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  ctrlBtnCancel: {
+    borderWidth: 1,
+    borderColor: 'rgba(148,163,184,0.2)',
+    backgroundColor: 'rgba(148,163,184,0.06)',
+    paddingHorizontal: 16,
+  },
+  ctrlBtnCancelText: {
+    color: '#94a3b8',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+});
+
+const readingBarStyles = StyleSheet.create({
+  bar: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    height: 56,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    backgroundColor: 'rgba(10, 10, 20, 0.92)',
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: 'rgba(167, 139, 250, 0.25)',
+    zIndex: 200,
+  },
+  progress: {
+    flex: 1,
+    color: 'rgba(255,255,255,0.45)',
+    fontSize: 12,
+    fontWeight: '500',
+  },
+  title: {
+    color: 'rgba(255,255,255,0.75)',
+    fontSize: 13,
+    fontWeight: '700',
+    letterSpacing: 0.3,
+  },
+  ctrlRow: {
+    flex: 1,
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    alignItems: 'center',
+    gap: 4,
+  },
+  ctrlBtn: {
+    padding: 6,
   },
 });
