@@ -1,4 +1,4 @@
-import axios from 'axios';
+﻿import axios from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 let client = null;
@@ -38,6 +38,7 @@ export async function sendMessage(message, opts = {}) {
       chatMode: opts.chatMode || null,
       driveMode: opts.driveMode || false,
       ...(opts.location ? { lat: opts.location.lat, lon: opts.location.lon, city: opts.location.city || null } : {}),
+      ...(opts.calendarEvents && opts.calendarEvents.length > 0 ? { calendarEvents: opts.calendarEvents } : {}),
     });
     return response.data;
   } catch (error) {
@@ -130,6 +131,7 @@ export async function sendMessageStream(message, onChunk, onMeta, onDone, opts =
       chatMode: opts.chatMode || null,
       driveMode: opts.driveMode || false,
       ...(opts.location ? { lat: opts.location.lat, lon: opts.location.lon, city: opts.location.city || null } : {}),
+      ...(opts.calendarEvents && opts.calendarEvents.length > 0 ? { calendarEvents: opts.calendarEvents } : {}),
     }),
   });
 
@@ -329,6 +331,16 @@ export async function recallMemory(query) {
   }
 }
 
+export async function fetchAutocomplete(partial, context) {
+  const c = await getClient();
+  try {
+    const response = await c.post('/api/autocomplete', { partial, context });
+    return response.data.completion || '';
+  } catch {
+    return '';
+  }
+}
+
 export async function summarizeSession(messages) {
   const c = await getClient();
   try {
@@ -400,6 +412,28 @@ export async function getRoutineBriefing() {
   return response.json();
 }
 
+export async function addKnowledgeEntry(title, content, category) {
+  const c = await getClient();
+  const response = await c.post('/api/kb', { title, content, category: category || 'general' });
+  return response.data;
+}
+
+export async function getKnowledge() {
+  const c = await getClient();
+  try {
+    const response = await c.get('/api/kb');
+    return response.data;
+  } catch {
+    return { entries: [] };
+  }
+}
+
+export async function deleteKnowledgeEntry(id) {
+  const c = await getClient();
+  const response = await c.delete(`/api/kb/${id}`);
+  return response.data;
+}
+
 export async function sendVision(imageBase64, mimeType, prompt) {
   let url = await AsyncStorage.getItem('captain_api_url') || DEFAULT_URL;
   if (url.includes('192.168.')) { url = DEFAULT_URL; }
@@ -421,4 +455,24 @@ export async function sendVision(imageBase64, mimeType, prompt) {
   }
 
   return response.json();
+}
+
+export async function analyzeStyle(recentMessages) {
+  const c = await getClient();
+  try {
+    const response = await c.post('/api/analyze-style', { recentMessages });
+    return response.data;
+  } catch (error) {
+    throw new Error(error.response?.data?.error || 'Style analysis failed');
+  }
+}
+
+export async function getStyle() {
+  const c = await getClient();
+  try {
+    const response = await c.get('/api/style');
+    return response.data;
+  } catch (error) {
+    throw new Error(error.response?.data?.error || 'Could not fetch style');
+  }
 }

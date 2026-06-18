@@ -25,7 +25,7 @@ import ConversationItem from '../components/ConversationItem';
 import MicButton from '../components/MicButton';
 import Waveform from '../components/Waveform';
 import { useTheme } from '../context/ThemeContext';
-import { sendMessage, sendMessageStream, sendFeedback, testConnection, getBriefing, getDailyBriefingStructured, registerPushToken, sendVision, getBookingsToday, getWeather, addReminder, addMemory, recallMemory, addDocument, addPersonMemory, addContact, summarizeSession, generateDraft, addFollowup, getSuggestions, getDocuments, getContacts, summarizeMeeting, getRoutineBriefing } from '../services/api';
+import { sendMessage, sendMessageStream, sendFeedback, testConnection, getBriefing, getDailyBriefingStructured, registerPushToken, sendVision, getBookingsToday, getWeather, addReminder, addMemory, recallMemory, addDocument, addPersonMemory, addContact, summarizeSession, generateDraft, addFollowup, getSuggestions, getDocuments, getContacts, summarizeMeeting, getRoutineBriefing, fetchAutocomplete, addKnowledgeEntry, analyzeStyle } from '../services/api';
 import {
   requestPermissions,
   startListening,
@@ -323,6 +323,9 @@ try { ImagePicker = require('expo-image-picker'); } catch {}
 let Location = null;
 try { Location = require('expo-location'); } catch {}
 
+let Calendar = null;
+try { Calendar = require('expo-calendar'); } catch {}
+
 // ── Task detection helpers ───────────────────────────────────────────────────
 const ACTION_VERBS = ['schedule', 'call', 'send', 'book', 'check', 'prepare', 'create', 'update', 'review', 'contact', 'confirm', 'follow', 'set up', 'write', 'get', 'find', 'buy', 'order', 'reply', 'open', 'close', 'cancel', 'submit', 'upload', 'download', 'install', 'remove', 'add', 'edit', 'delete', 'share', 'invite', 'attend', 'complete', 'finish', 'start', 'stop', 'pause', 'resume', 'fix', 'test', 'deploy', 'launch', 'research', 'draft'];
 
@@ -438,6 +441,7 @@ export default function ChatScreen({ navigation, route }) {
   const [showKeyboard, setShowKeyboard] = useState(false);
   const [activeMode, setActiveMode] = useState(null);
   const [appSettings, setAppSettings] = useState({ driveMode: false, whisperMode: false, meetingMode: false, ambientMode: false, voiceSpeed: 1.0, personality: 'casual', shakeToActivate: true });
+  const [calendarEvents, setCalendarEvents] = useState([]);
   const [shakeToast, setShakeToast] = useState(false);
   const shakeLastRef = useRef(0);
   const [pendingImage, setPendingImage] = useState(null);
@@ -446,6 +450,7 @@ export default function ChatScreen({ navigation, route }) {
   const [contextInfo, setContextInfo] = useState(null);
   const [quickReminder, setQuickReminder] = useState(null);
   const [notedFact, setNotedFact] = useState(null);
+  const [savedKbEntry, setSavedKbEntry] = useState(null); // { title }
   const [notedRelationship, setNotedRelationship] = useState(null); // { name, label }
   const [savedContact, setSavedContact] = useState(null); // { name, phone }
   const [queuedFollowup, setQueuedFollowup] = useState(null); // text string
@@ -464,6 +469,12 @@ export default function ChatScreen({ navigation, route }) {
   const dictationScrollRef = useRef(null);
   const dictationTimerRef = useRef(null);
   const isDictationModeRef = useRef(false);
+
+  // ── Predictive autocomplete ──────────────────────────────────────────────────
+  const [autocompleteChip, setAutocompleteChip] = useState(''); // completion text only
+  const autocompleteDebounceRef = useRef(null);
+  const autocompleteInputRef = useRef(''); // tracks input at fetch time to detect stale results
+  // ────────────────────────────────────────────────────────────────────────────
 
   // ── Meeting Mode state ───────────────────────────────────────────────────────
   const [meetingMode, setMeetingMode] = useState(false);
@@ -488,6 +499,8 @@ export default function ChatScreen({ navigation, route }) {
   const [draftModal, setDraftModal] = useState(null); // { draftText, recipient, type }
   const [draftText, setDraftText] = useState('');
   const [draftLoading, setDraftLoading] = useState(false);
+  const [stylizeLoading, setStylizeLoading] = useState(false);
+  const [stylizeToast, setStylizeToast] = useState(null); // null | 'loading' | 'done'
   const summaryOfferedRef = useRef(new Set());
   const summaryDismissTimer = useRef(null);
   const [weatherAlert, setWeatherAlert] = useState(null); // { alertText, severity }
@@ -542,6 +555,52 @@ export default function ChatScreen({ navigation, route }) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [textInput]);
 
+  // ── Autocomplete debounce logic ──────────────────────────────────────────────
+  const triggerAutocomplete = useCallback((input) => {
+    if (autocompleteDebounceRef.current) clearTimeout(autocompleteDebounceRef.current);
+
+    // Clear chip immediately on any keystroke
+    setAutocompleteChip('');
+
+    // Gate: only fetch if long enough and doesn't end with punctuation
+    const endsWithPunct = /[.!?,;:\s]$/.test(input);
+    if (input.length <= 10 || endsWithPunct) return;
+
+    autocompleteInputRef.current = input;
+    autocompleteDebounceRef.current = setTimeout(async () => {
+      // Grab last assistant message as context (max 100 chars)
+      const lastAssistant = messages.slice().reverse().find(m => !m.isUser && m.text && !m.isSystem);
+      const ctx = lastAssistant ? (lastAssistant.text || '').slice(0, 100) : '';
+
+      const completion = await fetchAutocomplete(input, ctx);
+
+      // Only show if input hasn't changed since we fired
+      if (autocompleteInputRef.current === input && completion && completion.trim().length > 0) {
+        setAutocompleteChip(completion.trim());
+      }
+    }, 600);
+  }, [messages]);
+
+  // Watch textInput changes and fire debounce
+  useEffect(() => {
+    if (!showKeyboard) return;
+    triggerAutocomplete(textInput);
+    // Space or punctuation pressed — clear chip without accepting
+    if (autocompleteChip && /[\s.!?,;:]$/.test(textInput)) {
+      setAutocompleteChip('');
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [textInput, showKeyboard]);
+
+  // Clear chip when keyboard closes or send fires
+  useEffect(() => {
+    if (!showKeyboard) {
+      setAutocompleteChip('');
+      if (autocompleteDebounceRef.current) clearTimeout(autocompleteDebounceRef.current);
+    }
+  }, [showKeyboard]);
+  // ────────────────────────────────────────────────────────────────────────────
+
   // Session summary offer — trigger at 10, 20, 30 messages
   useEffect(() => {
     const count = messages.length;
@@ -574,6 +633,29 @@ export default function ChatScreen({ navigation, route }) {
     } catch (e) {
       setSummaryLoading(false);
       Alert.alert('Could not summarize', e.message);
+    }
+  }, [messages]);
+
+  const handleStylize = useCallback(async () => {
+    const userMessages = messages
+      .filter(m => m.isUser && m.text && !m.isSystem)
+      .slice(-30)
+      .map(m => m.text);
+    if (userMessages.length < 5) {
+      Alert.alert('Not enough messages', 'Send at least 5 messages first so Captain can learn your style.');
+      return;
+    }
+    setStylizeLoading(true);
+    setStylizeToast('loading');
+    try {
+      await analyzeStyle(userMessages);
+      setStylizeToast('done');
+      setTimeout(() => setStylizeToast(null), 3000);
+    } catch (e) {
+      setStylizeToast(null);
+      Alert.alert('Style Error', e.message);
+    } finally {
+      setStylizeLoading(false);
     }
   }, [messages]);
 
@@ -828,6 +910,32 @@ export default function ChatScreen({ navigation, route }) {
               city = geo[0]?.city || geo[0]?.subregion || null;
             } catch {}
             setUserLocation({ lat: latitude, lon: longitude, city });
+          }
+        }
+      } catch {}
+
+      // Calendar fetch — only if user has opted in
+      try {
+        const calSettings = await AsyncStorage.getItem('captain_settings');
+        const calParsed = calSettings ? JSON.parse(calSettings) : {};
+        if (calParsed.calendarEnabled && Calendar) {
+          const { status: calStatus } = await Calendar.requestCalendarPermissionsAsync();
+          if (calStatus === 'granted') {
+            const allCalendars = await Calendar.getCalendarsAsync(Calendar.EntityTypes.EVENT);
+            const calendarIds = allCalendars.map(c => c.id);
+            if (calendarIds.length > 0) {
+              const startDate = new Date();
+              const endDate = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+              const events = await Calendar.getEventsAsync(calendarIds, startDate, endDate);
+              const mapped = events.map(e => ({
+                title: e.title || '',
+                startDate: e.startDate ? new Date(e.startDate).toLocaleString() : '',
+                endDate: e.endDate ? new Date(e.endDate).toLocaleString() : '',
+                location: e.location || '',
+                notes: e.notes || '',
+              }));
+              setCalendarEvents(mapped);
+            }
           }
         }
       } catch {}
@@ -2006,6 +2114,7 @@ export default function ChatScreen({ navigation, route }) {
       driveMode: appSettings.driveMode || activeMode === 'drive',
       personality: appSettings.personality || 'casual',
       location: userLocation || null,
+      calendarEvents: calendarEvents.length > 0 ? calendarEvents : undefined,
     };
 
     if (!imagePayload && userText) {
@@ -2102,6 +2211,29 @@ export default function ChatScreen({ navigation, route }) {
             addFollowup(fuText).catch(() => {});
             setQueuedFollowup(fuText);
             setTimeout(() => setQueuedFollowup(null), 4000);
+          }
+          break;
+        }
+      }
+
+      // Knowledge base detection
+      const kbPatterns = [
+        { re: /^add to knowledge base:\s*(.+)$/i, kbParse: (m) => { const kc = m[1].trim(); return { title: kc.slice(0, 60), content: kc, category: 'general' }; } },
+        { re: /^save to kb:\s*(.+)$/i, kbParse: (m) => { const kc = m[1].trim(); return { title: kc.slice(0, 60), content: kc, category: 'general' }; } },
+        { re: /^remember for reference:\s*(.+)$/i, kbParse: (m) => { const kc = m[1].trim(); return { title: kc.slice(0, 60), content: kc, category: 'reference' }; } },
+        { re: /^knowledge:\s*(.+?)\s*[—\-]\s*(.+)$/i, kbParse: (m) => ({ title: m[1].trim(), content: m[2].trim(), category: 'general' }) },
+        { re: /^fact:\s*(.+)$/i, kbParse: (m) => { const kc = m[1].trim(); return { title: kc.slice(0, 60), content: kc, category: 'reference' }; } },
+        { re: /^save this fact:\s*(.+)$/i, kbParse: (m) => { const kc = m[1].trim(); return { title: kc.slice(0, 60), content: kc, category: 'reference' }; } },
+      ];
+      for (const kbP of kbPatterns) {
+        const kbMatch = userText.match(kbP.re);
+        if (kbMatch) {
+          const { title: kbTitle, content: kbContent, category: kbCategory } = kbP.kbParse(kbMatch);
+          if (kbContent.length > 2) {
+            addKnowledgeEntry(kbTitle, kbContent, kbCategory).catch(() => {});
+            setSavedKbEntry({ title: kbTitle });
+            haptic('saved');
+            setTimeout(() => setSavedKbEntry(null), 4000);
           }
           break;
         }
@@ -2312,7 +2444,7 @@ export default function ChatScreen({ navigation, route }) {
       inFlightRef.current = false;
       setIsProcessing(false);
     }
-  }, [activeMode, appSettings, shouldSpeak, enterMeetingMode, enterDictationMode, userLocation, handleSpeedDial]);
+  }, [activeMode, appSettings, shouldSpeak, enterMeetingMode, enterDictationMode, userLocation, calendarEvents, handleSpeedDial]);
 
   const handleCameraPress = useCallback(async () => {
     if (!ImagePicker) {
@@ -2402,6 +2534,8 @@ export default function ChatScreen({ navigation, route }) {
     const text = textInput.trim();
     if ((!text && !pendingImage) || isProcessing) return;
     setTextInput('');
+    setAutocompleteChip('');
+    if (autocompleteDebounceRef.current) clearTimeout(autocompleteDebounceRef.current);
     setShowKeyboard(false);
     if (pendingImage) {
       handleSend(text, pendingImage);
@@ -2888,11 +3022,33 @@ export default function ChatScreen({ navigation, route }) {
         </View>
       )}
 
+      {/* Stylize toast */}
+      {stylizeToast === 'loading' && (
+        <View style={styles.stylizeBar}>
+          <MaterialIcons name="auto-fix-high" size={15} color="#f59e0b" />
+          <Text style={styles.stylizeBarText}>Learning your writing style...</Text>
+        </View>
+      )}
+      {stylizeToast === 'done' && (
+        <View style={[styles.stylizeBar, { backgroundColor: 'rgba(52,211,153,0.12)' }]}>
+          <MaterialIcons name="check-circle" size={15} color="#34d399" />
+          <Text style={[styles.stylizeBarText, { color: '#34d399' }]}>Style profile updated</Text>
+        </View>
+      )}
+
       {/* Follow-up queued badge */}
       {queuedFollowup && (
         <View style={styles.followupQueuedBar}>
           <MaterialIcons name="update" size={15} color="#4ade80" />
           <Text style={styles.followupQueuedText} numberOfLines={1}>Follow-up queued: {queuedFollowup}</Text>
+        </View>
+      )}
+
+      {/* Knowledge base saved badge */}
+      {savedKbEntry && (
+        <View style={styles.savedKbBar}>
+          <MaterialIcons name="library-books" size={15} color="#a78bfa" />
+          <Text style={styles.savedKbText} numberOfLines={1}>Added to knowledge base: {savedKbEntry.title}</Text>
         </View>
       )}
 
@@ -3101,6 +3257,25 @@ export default function ChatScreen({ navigation, route }) {
                 </Pressable>
               </View>
             ) : null}
+            {autocompleteChip ? (
+              <Pressable
+                onPress={() => {
+                  const appended = textInput.trimEnd() + ' ' + autocompleteChip;
+                  setTextInput(appended);
+                  setAutocompleteChip('');
+                  autocompleteInputRef.current = appended;
+                }}
+                style={({ pressed }) => [
+                  acStyles.chip,
+                  { borderColor: theme.accent + '50', backgroundColor: pressed ? theme.accent + '20' : theme.accent + '10' },
+                ]}
+              >
+                <Text style={[acStyles.chipPreview, { color: theme.fgTertiary }]} numberOfLines={1}>
+                  {autocompleteChip}
+                </Text>
+                <MaterialIcons name="arrow-forward" size={13} color={theme.accent} style={{ opacity: 0.75 }} />
+              </Pressable>
+            ) : null}
             <View style={styles.inputRow}>
               <Pressable onPress={handleCameraPress} style={[styles.inputSideBtn, { backgroundColor: theme.inputBg }]}>
                 <MaterialIcons name="camera-alt" size={20} color={pendingImage ? theme.accent : theme.fgTertiary} />
@@ -3241,6 +3416,16 @@ export default function ChatScreen({ navigation, route }) {
               textAlignVertical="top"
               autoCapitalize="sentences"
             />
+            <Pressable
+              style={({ pressed }) => [draftStyles.stylizeBtn, { opacity: pressed ? 0.7 : (stylizeLoading ? 0.5 : 1) }]}
+              onPress={handleStylize}
+              disabled={stylizeLoading}
+            >
+              <MaterialIcons name="auto-fix-high" size={14} color="#f59e0b" />
+              <Text style={draftStyles.stylizeBtnText}>
+                {stylizeLoading ? 'Learning...' : 'Stylize'}
+              </Text>
+            </Pressable>
             <View style={draftStyles.actionRow}>
               <Pressable
                 style={({ pressed }) => [draftStyles.actionBtn, draftStyles.actionBtnCopy, { opacity: pressed ? 0.7 : 1 }]}
@@ -3499,6 +3684,14 @@ const draftStyles = StyleSheet.create({
     paddingHorizontal: 12, justifyContent: 'center',
   },
   actionBtnDismissText: { fontSize: 14 },
+  stylizeBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    paddingHorizontal: 14, paddingVertical: 8, borderRadius: 10,
+    borderWidth: 1, borderColor: 'rgba(245,158,11,0.35)',
+    backgroundColor: 'rgba(245,158,11,0.08)', alignSelf: 'flex-start',
+    marginBottom: 10,
+  },
+  stylizeBtnText: { color: '#f59e0b', fontSize: 13, fontWeight: '600' },
 });
 
 const styles = StyleSheet.create({
@@ -3604,6 +3797,14 @@ const styles = StyleSheet.create({
     borderRadius: 10, borderWidth: 1, borderColor: 'rgba(74, 222, 128, 0.2)',
   },
   followupQueuedText: { flex: 1, color: '#4ade80', fontSize: 12, fontStyle: 'italic' },
+  stylizeBar: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    marginHorizontal: 16, marginBottom: 8,
+    paddingHorizontal: 14, paddingVertical: 8,
+    backgroundColor: 'rgba(245, 158, 11, 0.08)',
+    borderRadius: 10, borderWidth: 1, borderColor: 'rgba(245, 158, 11, 0.2)',
+  },
+  stylizeBarText: { flex: 1, color: '#f59e0b', fontSize: 12, fontStyle: 'italic' },
   timeBlockBar: {
     flexDirection: 'row', alignItems: 'center', gap: 8,
     marginHorizontal: 16, marginBottom: 8,
@@ -3888,6 +4089,26 @@ const sugStyles = StyleSheet.create({
   chipText: {
     fontSize: 13,
     fontWeight: '500',
+  },
+});
+
+const acStyles = StyleSheet.create({
+  chip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginHorizontal: 16,
+    marginBottom: 6,
+    paddingHorizontal: 14,
+    paddingVertical: 7,
+    borderRadius: 18,
+    borderWidth: 1,
+  },
+  chipPreview: {
+    flex: 1,
+    fontSize: 13,
+    fontStyle: 'italic',
+    opacity: 0.75,
   },
 });
 

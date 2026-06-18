@@ -11,6 +11,7 @@ import {
   Linking,
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useTheme } from '../context/ThemeContext';
 import {
   getBookingsToday,
@@ -32,7 +33,12 @@ import {
   getBookmarks,
   getFollowups,
   deleteFollowup,
+  getKnowledge,
+  deleteKnowledgeEntry,
 } from '../services/api';
+
+let Calendar = null;
+try { Calendar = require('expo-calendar'); } catch {}
 
 function Card({ icon, label, color, children, onPress, collapsible }) {
   const { theme } = useTheme();
@@ -71,6 +77,7 @@ export default function ActionsScreen({ navigation }) {
   const [birthdays, setBirthdays] = useState([]);
   const [bookmarks, setBookmarks] = useState([]);
   const [followups, setFollowups] = useState([]);
+  const [kb, setKb] = useState([]);
   const [expenseAmount, setExpenseAmount] = useState('');
   const [expenseCategory, setExpenseCategory] = useState('other');
   const [contactQ, setContactQ] = useState('');
@@ -78,6 +85,7 @@ export default function ActionsScreen({ navigation }) {
   const [weather, setWeather] = useState(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [calendarEvents, setCalendarEvents] = useState([]);
 
   const EXPENSE_CATS = ['food', 'fuel', 'supplies', 'marketing', 'other'];
 
@@ -96,6 +104,7 @@ export default function ActionsScreen({ navigation }) {
       getExpenses(thirtyDaysAgo, null),
       getContacts(),
       getFollowups(),
+      getKnowledge(),
     ]);
 
     if (results[0].status === 'fulfilled') setBookings(results[0].value.bookings || []);
@@ -110,16 +119,41 @@ export default function ActionsScreen({ navigation }) {
     if (results[9].status === 'fulfilled') setExpenseList(results[9].value.expenses || []);
     if (results[10].status === 'fulfilled') setContacts(results[10].value || { business: [], personal: [] });
     if (results[11].status === 'fulfilled') setFollowups(results[11].value.followups || []);
+    if (results[12].status === 'fulfilled') setKb(results[12].value.entries || []);
     setLoading(false);
   }, []);
 
-  useEffect(() => { loadAll(); }, [loadAll]);
+  const loadCalendarEvents = useCallback(async () => {
+    try {
+      const s = await AsyncStorage.getItem('captain_settings');
+      const parsed = s ? JSON.parse(s) : {};
+      if (!parsed.calendarEnabled || !Calendar) return;
+      const { status } = await Calendar.requestCalendarPermissionsAsync();
+      if (status !== 'granted') return;
+      const allCalendars = await Calendar.getCalendarsAsync(Calendar.EntityTypes.EVENT);
+      const calendarIds = allCalendars.map(c => c.id);
+      if (calendarIds.length === 0) return;
+      const todayStart = new Date();
+      todayStart.setHours(0, 0, 0, 0);
+      const todayEnd = new Date();
+      todayEnd.setHours(23, 59, 59, 999);
+      const events = await Calendar.getEventsAsync(calendarIds, todayStart, todayEnd);
+      setCalendarEvents(events.map(e => ({
+        title: e.title || '',
+        startDate: e.startDate ? new Date(e.startDate).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '',
+        endDate: e.endDate ? new Date(e.endDate).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '',
+        location: e.location || '',
+      })));
+    } catch {}
+  }, []);
+
+  useEffect(() => { loadAll(); loadCalendarEvents(); }, [loadAll, loadCalendarEvents]);
 
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
-    await loadAll();
+    await Promise.all([loadAll(), loadCalendarEvents()]);
     setRefreshing(false);
-  }, [loadAll]);
+  }, [loadAll, loadCalendarEvents]);
 
   const handleContactSearch = useCallback(async () => {
     if (!contactQ.trim()) return;
@@ -155,6 +189,15 @@ export default function ActionsScreen({ navigation }) {
     try {
       const data = await deleteFollowup(id);
       setFollowups(data.followups || []);
+    } catch (e) {
+      Alert.alert('Error', e.message);
+    }
+  }, []);
+
+  const handleDeleteKbEntry = useCallback(async (id) => {
+    try {
+      const data = await deleteKnowledgeEntry(id);
+      setKb(data.entries || []);
     } catch (e) {
       Alert.alert('Error', e.message);
     }
@@ -222,6 +265,27 @@ export default function ActionsScreen({ navigation }) {
           </View>
           <Text style={[styles.weatherWind, { color: theme.fgTertiary }]}>{weather.windspeed} km/h</Text>
         </View>
+      )}
+
+      {/* Today's Calendar */}
+      {calendarEvents.length > 0 && (
+        <Card icon="today" label="Today's Calendar" color="#818cf8" collapsible>
+          {calendarEvents.map((e, i) => (
+            <View key={i} style={[styles.listRow, { borderBottomColor: theme.divider }]}>
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.listMain, { color: theme.fgSecondary }]}>{e.title}</Text>
+                {(e.startDate || e.endDate) && (
+                  <Text style={[styles.listSub, { color: theme.fgTertiary }]}>
+                    {e.startDate}{e.endDate ? ' - ' + e.endDate : ''}
+                  </Text>
+                )}
+                {e.location ? (
+                  <Text style={[styles.listSub, { color: theme.fgTertiary }]} numberOfLines={1}>{e.location}</Text>
+                ) : null}
+              </View>
+            </View>
+          ))}
+        </Card>
       )}
 
       {/* Today's Schedule */}
@@ -594,6 +658,42 @@ export default function ActionsScreen({ navigation }) {
         </Card>
       )}
 
+      {/* Knowledge Base */}
+      {kb.length > 0 && (
+        <Card icon="library-books" label="Knowledge Base" color="#a78bfa" collapsible>
+          {kb.slice(0, 20).map((entry) => (
+            <Pressable
+              key={entry.id}
+              onLongPress={() => {
+                Alert.alert(
+                  'Delete entry?',
+                  entry.title,
+                  [
+                    { text: 'Cancel', style: 'cancel' },
+                    { text: 'Delete', style: 'destructive', onPress: () => handleDeleteKbEntry(entry.id) },
+                  ]
+                );
+              }}
+              style={[styles.listRow, { borderBottomColor: theme.divider }]}
+            >
+              <View style={{ flex: 1 }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 2 }}>
+                  <Text style={[styles.listMain, { color: theme.fgSecondary, flex: 1 }]} numberOfLines={1}>
+                    {entry.title}
+                  </Text>
+                  <View style={[styles.kbCategoryChip, { borderColor: '#a78bfa40' }]}>
+                    <Text style={[styles.kbCategoryText, { color: '#a78bfa' }]}>{entry.category}</Text>
+                  </View>
+                </View>
+                <Text style={[styles.listSub, { color: theme.fgTertiary }]} numberOfLines={2}>
+                  {(entry.content || '').slice(0, 60)}
+                </Text>
+              </View>
+            </Pressable>
+          ))}
+        </Card>
+      )}
+
       {/* What Captain Knows */}
       <Card icon="psychology" label="What Captain Knows" color="#fbbf24" collapsible>
         {Object.keys(facts).length === 0 ? (
@@ -726,4 +826,9 @@ const styles = StyleSheet.create({
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
     marginTop: 8, paddingTop: 10, borderTopWidth: StyleSheet.hairlineWidth,
   },
+  kbCategoryChip: {
+    paddingHorizontal: 7, paddingVertical: 2,
+    borderRadius: 6, borderWidth: 1,
+  },
+  kbCategoryText: { fontSize: 10, fontWeight: '600', textTransform: 'capitalize' },
 });

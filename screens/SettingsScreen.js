@@ -13,6 +13,7 @@ import {
 import { MaterialIcons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Updates from 'expo-updates';
+import * as LocalAuthentication from 'expo-local-authentication';
 import { testConnection, resetClient } from '../services/api';
 import { useTheme, PALETTE } from '../context/ThemeContext';
 
@@ -39,6 +40,8 @@ const DEFAULT_SETTINGS = {
   meetingMode: false,
   focusMode: false,
   useLocation: false,
+  calendarEnabled: false,
+  biometricLock: false,
 };
 
 const PERSONALITIES = [
@@ -106,6 +109,7 @@ export default function SettingsScreen({ navigation }) {
   const [updateStatus, setUpdateStatus] = useState('');
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
   const [googleConnected, setGoogleConnected] = useState(false);
+  const [biometricAvailable, setBiometricAvailable] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -129,6 +133,15 @@ export default function SettingsScreen({ navigation }) {
         const data = await res.json();
         setGoogleConnected(data.connected);
       } catch {}
+
+      // Check biometric hardware availability
+      try {
+        const hasHardware = await LocalAuthentication.hasHardwareAsync();
+        const isEnrolled = await LocalAuthentication.isEnrolledAsync();
+        setBiometricAvailable(hasHardware && isEnrolled);
+      } catch {
+        setBiometricAvailable(false);
+      }
     })();
   }, []);
 
@@ -207,6 +220,17 @@ export default function SettingsScreen({ navigation }) {
         body: JSON.stringify({ mode: personalityKey }),
       });
     } catch {}
+  };
+
+  const handleBiometricToggle = async (value) => {
+    if (value && !biometricAvailable) {
+      Alert.alert(
+        'Biometrics Not Available',
+        'This device does not have Face ID, Touch ID, or fingerprint authentication set up.',
+      );
+      return;
+    }
+    await updateSetting('biometricLock', value);
   };
 
   const handleConnectGoogle = () => {
@@ -520,6 +544,27 @@ export default function SettingsScreen({ navigation }) {
         </SettingRow>
       </View>
 
+      {/* ── Security ── */}
+      <View style={s()}>
+        <Text style={[styles.sectionTitle, { color: theme.accent }]}>Security</Text>
+        <SettingRow icon="lock" label="Biometric Lock">
+          <Switch
+            value={settings.biometricLock}
+            onValueChange={handleBiometricToggle}
+            trackColor={{ false: theme.switchTrackOff, true: theme.switchTrackOn }}
+            thumbColor={settings.biometricLock ? theme.switchThumbOn : theme.switchThumbOff}
+          />
+        </SettingRow>
+        <Text style={[styles.subLabel, { color: theme.fgTertiary, marginTop: 4 }]}>
+          Require Face ID or fingerprint to open Captain.
+        </Text>
+        {!biometricAvailable && (
+          <Text style={[styles.subLabel, { color: '#f87171', marginTop: 0 }]}>
+            No biometrics enrolled on this device.
+          </Text>
+        )}
+      </View>
+
       {/* ── Privacy ── */}
       <View style={s()}>
         <Text style={[styles.sectionTitle, { color: theme.accent }]}>Privacy</Text>
@@ -533,6 +578,17 @@ export default function SettingsScreen({ navigation }) {
         </SettingRow>
         <Text style={[styles.subLabel, { color: theme.fgTertiary, marginTop: 4 }]}>
           When enabled, Captain uses your real location for weather and context. Off by default.
+        </Text>
+        <SettingRow icon="event-note" label="Sync device calendar">
+          <Switch
+            value={settings.calendarEnabled}
+            onValueChange={v => updateSetting('calendarEnabled', v)}
+            trackColor={{ false: theme.switchTrackOff, true: theme.switchTrackOn }}
+            thumbColor={settings.calendarEnabled ? theme.switchThumbOn : theme.switchThumbOff}
+          />
+        </SettingRow>
+        <Text style={[styles.subLabel, { color: theme.fgTertiary, marginTop: 4 }]}>
+          When enabled, Captain reads your device calendar events for the next 7 days and uses them as context. Off by default.
         </Text>
       </View>
 
