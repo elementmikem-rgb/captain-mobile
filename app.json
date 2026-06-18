@@ -3,6 +3,7 @@
     "name": "Captain",
     "slug": "captain-mobile",
     "version": "1.0.0",
+    "scheme": "captain",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -16,7 +17,9 @@
       "supportsTablet": true,
       "infoPlist": {
         "NSSpeechRecognitionUsageDescription": "Allow $(PRODUCT_NAME) to use speech recognition.",
-        "NSMicrophoneUsageDescription": "Allow $(PRODUCT_NAME) to use the microphone."
+        "NSMicrophoneUsageDescription": "Allow $(PRODUCT_NAME) to use the microphone.",
+        "NSCameraUsageDescription": "Allow $(PRODUCT_NAME) to use the camera to analyze images.",
+        "NSPhotoLibraryUsageDescription": "Allow $(PRODUCT_NAME) to access photos for image analysis."
       }
     },
     "android": {
@@ -28,7 +31,9 @@
       "permissions": [
         "android.permission.RECORD_AUDIO",
         "android.permission.INTERNET",
-        "android.permission.CHANGE_NETWORK_STATE"
+        "android.permission.CHANGE_NETWORK_STATE",
+        "android.permission.CAMERA",
+        "android.permission.READ_EXTERNAL_STORAGE"
       ],
       "package": "com.callova.captain",
       "usesCleartextTraffic": true
