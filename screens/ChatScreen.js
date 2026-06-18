@@ -34,6 +34,7 @@ import {
   playWakeChime,
   playDoneChime,
   useSpeechRecognitionEvent,
+  haptic,
 } from '../services/voice';
 
 const STORAGE_KEY = 'captain_messages';
@@ -457,6 +458,7 @@ export default function ChatScreen({ navigation, route }) {
   const searchInputRef = useRef(null);
   const [showSummaryBanner, setShowSummaryBanner] = useState(false);
   const [summaryLoading, setSummaryLoading] = useState(false);
+  const [preparingExport, setPreparingExport] = useState(false);
   const [draftModal, setDraftModal] = useState(null); // { draftText, recipient, type }
   const [draftText, setDraftText] = useState('');
   const [draftLoading, setDraftLoading] = useState(false);
@@ -525,6 +527,54 @@ export default function ChatScreen({ navigation, route }) {
       Alert.alert('Could not summarize', e.message);
     }
   }, [messages]);
+
+  const formatTranscript = useCallback(() => {
+    const now = new Date();
+    const dateStr = now.toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+    const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const lines = [`Captain Session — ${dateStr} at ${timeStr}`, '---', ''];
+    const visible = messages.filter(m => !m.isSystem);
+    for (const msg of visible) {
+      const speaker = msg.isUser ? '[You]' : '[Captain]';
+      const ts = msg.ts
+        ? new Date(msg.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        : '';
+      lines.push(`${speaker} ${msg.text || ''}${ts ? `  (${ts})` : ''}`);
+    }
+    return lines.join('\n');
+  }, [messages]);
+
+  const handleExport = useCallback(async () => {
+    if (messages.filter(m => !m.isSystem).length === 0) return;
+    setPreparingExport(true);
+    await new Promise(resolve => setTimeout(resolve, 200));
+    setPreparingExport(false);
+    const transcript = formatTranscript();
+    Alert.alert(
+      'Export Session',
+      'How would you like to export this transcript?',
+      [
+        {
+          text: 'Share',
+          onPress: async () => {
+            try {
+              await Share.share({ message: transcript, title: 'Captain Session' });
+            } catch (e) {
+              Alert.alert('Share Error', e.message);
+            }
+          },
+        },
+        {
+          text: 'Copy to Clipboard',
+          onPress: async () => {
+            await Clipboard.setStringAsync(transcript);
+            Alert.alert('Copied', 'Transcript copied to clipboard.');
+          },
+        },
+        { text: 'Cancel', style: 'cancel' },
+      ]
+    );
+  }, [messages, formatTranscript]);
 
   // Extract a name from AI response draft trigger patterns
   const extractDraftRecipient = useCallback((text) => {
@@ -628,7 +678,7 @@ export default function ChatScreen({ navigation, route }) {
   const triggerAutoListen = useCallback(async () => {
     const granted = await requestPermissions();
     if (!granted) return;
-    Vibration.vibrate(40);
+    haptic('wake');
     playWakeChime();
     setTranscript('');
     setIsListening(true);
@@ -789,7 +839,7 @@ export default function ChatScreen({ navigation, route }) {
         AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(next)).catch(() => {});
         return next;
       });
-      Vibration.vibrate([0, 40, 60, 40]);
+      haptic('saved');
     } catch (e) {
       Alert.alert('Note Error', 'Could not save voice note: ' + e.message);
     }
@@ -818,10 +868,10 @@ export default function ChatScreen({ navigation, route }) {
     if (noteModeTimerRef.current) clearTimeout(noteModeTimerRef.current);
     noteModeTimerRef.current = setTimeout(() => {
       setIsNoteMode(true);
-      Vibration.vibrate([0, 30, 50, 30]);
+      haptic('saved');
     }, 800);
 
-    Vibration.vibrate([0, 15, 30, 15]);
+    haptic('wake');
     playWakeChime();
     setTranscript('');
     setIsListening(true);
@@ -858,7 +908,7 @@ export default function ChatScreen({ navigation, route }) {
       const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
       await addReminder(text, tomorrow);
       setQuickReminder(null);
-      Vibration.vibrate([0, 40, 60, 40]);
+      haptic('saved');
     } catch (e) {
       Alert.alert('Error', e.message);
     }
@@ -985,6 +1035,52 @@ export default function ChatScreen({ navigation, route }) {
   }, [appSettings.voiceSpeed]);
   // ────────────────────────────────────────────────────────────────────────────
 
+  // ── Navigation command interceptor ─────────────────────────────────────────
+  const handleNavigationCommand = useCallback(async (text) => {
+    const lower = text.trim().toLowerCase();
+
+    const NAV_COMMANDS = [
+      { match: s => /^(go to actions|show actions|open actions)$/.test(s), screen: 'Actions', label: 'Actions' },
+      { match: s => /^(go to bookmarks|show bookmarks|show my bookmarks)$/.test(s), screen: 'Actions', label: 'Actions' },
+      { match: s => /^(show my expenses|go to expenses|show expenses)$/.test(s), screen: 'Actions', label: 'Actions' },
+      { match: s => /^(go to bookings|show bookings|show my bookings)$/.test(s), screen: 'Actions', label: 'Actions' },
+      { match: s => /^(go to settings|open settings|show settings)$/.test(s), screen: 'Settings', label: 'Settings' },
+      { match: s => /^(show insights|my insights|intelligence report|show my insights)$/.test(s), screen: 'Insights', label: 'Insights' },
+      { match: s => /^(show activity|captain'?s log|activity log|show activity log)$/.test(s), screen: 'ActivityLog', label: "Captain's Log" },
+      { match: s => /^(go home|go back|back to chat|back to home)$/.test(s), screen: 'Chat', label: 'Chat' },
+    ];
+
+    const cmd = NAV_COMMANDS.find(c => c.match(lower));
+    if (!cmd) return false;
+
+    try {
+      navigation.navigate(cmd.screen);
+    } catch {}
+
+    const confirmText = `Navigating to ${cmd.label}.`;
+    const sysMsg = { id: Date.now(), text: confirmText, isUser: false, isSystem: true, ts: Date.now() };
+    setMessages(prev => {
+      const next = [...prev, sysMsg];
+      AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(next)).catch(() => {});
+      return next;
+    });
+
+    try {
+      const s = await AsyncStorage.getItem('captain_settings');
+      const parsed = s ? JSON.parse(s) : {};
+      const willSpeak = parsed.voiceEnabled !== false && !parsed.whisperMode && !parsed.meetingMode;
+      if (willSpeak) {
+        const speed = parsed.voiceSpeed || appSettings.voiceSpeed || 1.0;
+        setIsSpeaking(true);
+        await speak(confirmText, speed);
+        setIsSpeaking(false);
+      }
+    } catch {}
+
+    return true;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [navigation, appSettings.voiceSpeed]);
+  // ────────────────────────────────────────────────────────────────────────────
 
   const toggleHUD = useCallback(() => {
     if (!hudMode) {
@@ -1001,6 +1097,12 @@ export default function ChatScreen({ navigation, route }) {
     if (!imagePayload && userText) {
       const handled = await handleVoiceCommand(userText);
       if (handled) return;
+    }
+
+    // ── Navigation command interceptor ─────────────────────────────────────
+    if (!imagePayload && userText) {
+      const navHandled = await handleNavigationCommand(userText);
+      if (navHandled) return;
     }
 
 
@@ -1068,6 +1170,7 @@ export default function ChatScreen({ navigation, route }) {
         }
         if (result.navigate) {
           // navigate to briefing tab then fall through to fire briefing message
+          haptic('navigate');
           try { navigation.navigate(result.navigate); } catch {}
           // fall through intentionally — let briefing trigger handle the message
           userText = 'My daily briefing';
@@ -1124,6 +1227,7 @@ export default function ChatScreen({ navigation, route }) {
           if (fact.length > 2) {
             addMemory(fact).catch(() => {});
             setNotedFact(fact);
+            haptic('saved');
             setTimeout(() => setNotedFact(null), 3000);
           }
           break;
@@ -1152,6 +1256,7 @@ export default function ChatScreen({ navigation, route }) {
           if (pfact.length > 2) {
             addPersonMemory(name, pfact).catch(() => {});
             setNotedRelationship({ name, label: pfact });
+            haptic('saved');
             setTimeout(() => setNotedRelationship(null), 3500);
           }
           break;
@@ -1172,6 +1277,7 @@ export default function ChatScreen({ navigation, route }) {
           if (cName.length > 0 && cPhone.length >= 7) {
             addContact(cName, cPhone, '').catch(() => {});
             setSavedContact({ name: cName, phone: cPhone });
+            haptic('saved');
             setTimeout(() => setSavedContact(null), 4000);
           }
           break;
@@ -1243,6 +1349,7 @@ export default function ChatScreen({ navigation, route }) {
       }
     }
 
+    haptic('sent');
     const now = Date.now();
     const displayText = imagePayload ? `[Image] ${userText || 'What do you see?'}` : userText;
     const userMsg = { id: now, text: displayText, isUser: true, ts: now };
@@ -1284,10 +1391,11 @@ export default function ChatScreen({ navigation, route }) {
               setDetectedLang(null);
             }
           },
-          (finalText) => {
+          (finalText, doneData) => {
+            const confidence = doneData?.confidence || null;
             let finalMessages;
             setMessages(prev => {
-              finalMessages = prev.map(m => m.id === captainMsgId ? { ...m, text: finalText } : m);
+              finalMessages = prev.map(m => m.id === captainMsgId ? { ...m, text: finalText, confidence } : m);
               return finalMessages;
             });
             if (finalMessages) {
@@ -1324,14 +1432,14 @@ export default function ChatScreen({ navigation, route }) {
 
       setStreamingMsgId(null);
       if (await shouldSpeak()) {
-        Vibration.vibrate([0, 30, 80, 30]);
+        haptic('received');
         setIsSpeaking(true);
         await speak(responseText, appSettings.voiceSpeed);
         setIsSpeaking(false);
         playDoneChime();
         if (appSettings.ambientMode && !appSettings.whisperMode && !appSettings.meetingMode) {
           setTimeout(() => {
-            Vibration.vibrate(20);
+            haptic('navigate');
             setTranscript('');
             setIsListening(true);
             startListening();
@@ -1353,10 +1461,12 @@ export default function ChatScreen({ navigation, route }) {
             playDoneChime();
           }
         } catch (fallbackError) {
+          haptic('error');
           Alert.alert('Error', fallbackError.message);
           setMessages(prev => prev.filter(m => m.id !== captainMsgId));
         }
       } else {
+        haptic('error');
         Alert.alert('Vision Error', error.message);
         setMessages(prev => prev.filter(m => m.id !== captainMsgId));
       }
@@ -1487,8 +1597,11 @@ export default function ChatScreen({ navigation, route }) {
   const activeModeObj = CHAT_MODES.find(m => m.key === activeMode);
   const effectiveDrive = appSettings.driveMode || activeMode === 'drive';
 
+  const isNavigating = isProcessing && lastUserMsgRef.current && /^(go to|open |show )/i.test(lastUserMsgRef.current);
   const statusText = appSettings.meetingMode
     ? 'Meeting mode — silent'
+    : isNavigating
+    ? 'Navigating...'
     : isListening
     ? (isNoteMode ? 'Note mode — release to save' : 'Listening...')
     : isProcessing
@@ -1555,6 +1668,13 @@ export default function ChatScreen({ navigation, route }) {
           </Pressable>
           <Pressable onPress={toggleHUD} style={styles.settingsBtn}>
             <MaterialIcons name="fullscreen" size={22} color={theme.fgTertiary} />
+          </Pressable>
+          <Pressable
+            onPress={handleExport}
+            disabled={messages.filter(m => !m.isSystem).length === 0}
+            style={[styles.settingsBtn, { opacity: messages.filter(m => !m.isSystem).length === 0 ? 0.3 : 1 }]}
+          >
+            <MaterialIcons name="share" size={22} color={theme.fgTertiary} />
           </Pressable>
         </View>
       </View>
@@ -1681,6 +1801,7 @@ export default function ChatScreen({ navigation, route }) {
                 interactionId={msg.interactionId}
                 modelUsed={msg.modelUsed}
                 complexity={msg.complexity}
+                confidence={msg.confidence}
                 onFeedback={handleFeedback}
                 isStreaming={msg.id === streamingMsgId}
                 timestamp={msg.ts}
@@ -1700,6 +1821,8 @@ export default function ChatScreen({ navigation, route }) {
                       const t = prev[msg.id];
                       if (!t) return prev;
                       const newSteps = t.steps.map((s, i) => i === stepIdx ? { ...s, done: !s.done } : s);
+                      const allDone = newSteps.every(s => s.done);
+                      if (allDone) haptic('complete');
                       return { ...prev, [msg.id]: { ...t, steps: newSteps } };
                     });
                   }}
@@ -1714,6 +1837,11 @@ export default function ChatScreen({ navigation, route }) {
               )}
             </View>
           ))
+        )}
+        {preparingExport && (
+          <Text style={[styles.preparingExportText, { color: theme.fgTertiary }]}>
+            Preparing transcript...
+          </Text>
         )}
         {isProcessing && <ThinkingDots color={theme.accent} />}
       </ScrollView>
@@ -2444,6 +2572,13 @@ const styles = StyleSheet.create({
   },
   weatherAlertDismiss: {
     padding: 4,
+  },
+  preparingExportText: {
+    textAlign: 'center',
+    fontStyle: 'italic',
+    fontSize: 13,
+    paddingVertical: 10,
+    opacity: 0.7,
   },
 });
 

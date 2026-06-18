@@ -334,3 +334,27 @@ export function cancelSpeech() {
 }
 
 export { useSpeechRecognitionEvent };
+
+// ---------------------------------------------------------------------------
+// Haptic intelligence — distinct vibration patterns for Captain events
+// ---------------------------------------------------------------------------
+import { Vibration } from 'react-native';
+
+/**
+ * Fire a named haptic pattern.
+ *
+ * @param {'wake'|'sent'|'received'|'error'|'saved'|'navigate'|'reminder'|'complete'} type
+ */
+export function haptic(type) {
+  switch (type) {
+    case 'wake':      Vibration.vibrate([0, 15, 30, 15]); break;        // double pulse — mic activated
+    case 'sent':      Vibration.vibrate(25); break;                     // single short — message sent
+    case 'received':  Vibration.vibrate([0, 10, 20, 10, 20, 10]); break; // triple light — response received
+    case 'error':     Vibration.vibrate([0, 50, 100, 50]); break;       // strong double — error
+    case 'saved':     Vibration.vibrate([0, 10, 30, 10]); break;        // soft double — saved/confirmed
+    case 'navigate':  Vibration.vibrate(15); break;                     // single tiny — navigation
+    case 'reminder':  Vibration.vibrate([0, 30, 60, 30, 60, 30]); break; // alarm pattern — reminder fires
+    case 'complete':  Vibration.vibrate([0, 20, 40, 80]); break;        // crescendo — task complete
+    default:          Vibration.vibrate(20); break;
+  }
+}
