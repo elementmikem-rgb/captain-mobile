@@ -14,10 +14,13 @@ import { MaterialIcons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Updates from 'expo-updates';
 import { testConnection, resetClient } from '../services/api';
+import { useTheme, PALETTE } from '../context/ThemeContext';
 
 const SETTINGS_KEY = 'captain_settings';
 const DEFAULT_SETTINGS = {
   voiceEnabled: true,
+  autoListen: false,
+  ambientMode: false,
   voiceSpeed: 1.0,
   autoPlayBriefing: true,
   morningBriefingTime: '7:00 AM',
@@ -29,9 +32,54 @@ const DEFAULT_SETTINGS = {
   doNotDisturb: false,
   dndStart: '10:00 PM',
   dndEnd: '7:00 AM',
+  personality: 'casual',
+  driveMode: false,
+  whisperMode: false,
+  meetingMode: false,
+  focusMode: false,
 };
 
+const PERSONALITIES = [
+  { key: 'professional', icon: 'business-center', label: 'Professional', desc: 'Formal, detailed', formality: 'formal', humor: 'none', verbosity: 'detailed' },
+  { key: 'casual',       icon: 'chat-bubble-outline', label: 'Casual',   desc: 'Friendly, concise', formality: 'casual', humor: 'light', verbosity: 'concise' },
+  { key: 'wit',          icon: 'mood',             label: 'Wit',         desc: 'Clever, Jarvis-style', formality: 'casual', humor: 'witty', verbosity: 'concise' },
+];
+
+const MODES = [
+  { key: 'dark',  icon: 'dark-mode',        label: 'Dark' },
+  { key: 'light', icon: 'light-mode',        label: 'Light' },
+  { key: 'auto',  icon: 'brightness-auto',   label: 'Auto' },
+];
+
+function ThemeSwatch({ colorKey, isSelected, onPress, isDark }) {
+  const p = PALETTE[colorKey];
+  const bgHalf = isDark ? p.darkBg : p.lightBg;
+  return (
+    <Pressable onPress={onPress} style={styles.swatchWrapper}>
+      <View style={[
+        styles.swatch,
+        isSelected && { borderColor: p.accent, borderWidth: 2.5 },
+      ]}>
+        <View style={[styles.swatchHalf, { backgroundColor: bgHalf }]} />
+        <View style={[styles.swatchHalf, { backgroundColor: p.accent }]} />
+        {isSelected && (
+          <View style={styles.swatchCheck}>
+            <MaterialIcons name="check" size={11} color={p.accent} />
+          </View>
+        )}
+      </View>
+      <Text style={[
+        styles.swatchLabel,
+        { color: isSelected ? p.accent : '#888', fontWeight: isSelected ? '600' : '400' },
+      ]}>
+        {p.label}
+      </Text>
+    </Pressable>
+  );
+}
+
 export default function SettingsScreen() {
+  const { theme, colorKey, mode, setColorKey, setMode, isDark } = useTheme();
   const [apiUrl, setApiUrl] = useState('https://callova.live/captain');
   const [apiKey, setApiKey] = useState('');
   const [showApiKey, setShowApiKey] = useState(false);
@@ -49,11 +97,17 @@ export default function SettingsScreen() {
       const saved = await AsyncStorage.getItem(SETTINGS_KEY);
       if (url) setApiUrl(url);
       if (key) setApiKey(key);
-      if (saved) setSettings({ ...DEFAULT_SETTINGS, ...JSON.parse(saved) });
-
+      if (saved) {
+        try {
+          setSettings({ ...DEFAULT_SETTINGS, ...JSON.parse(saved) });
+        } catch {
+          setSettings(DEFAULT_SETTINGS);
+          await AsyncStorage.removeItem(SETTINGS_KEY);
+        }
+      }
       try {
         const baseUrl = url || 'https://callova.live/captain';
-        const apiKeyVal = key || 'Ml2znOnV_iylluaiXn-9Me8JIHVP0eu95yw-V6koqlI';
+        const apiKeyVal = key || '';
         const res = await fetch(`${baseUrl}/api/auth/google/status`, { headers: { 'X-API-Key': apiKeyVal } });
         const data = await res.json();
         setGoogleConnected(data.connected);
@@ -104,12 +158,17 @@ export default function SettingsScreen() {
     setTesting(true);
     setStatus('');
     try {
+      const prev = await AsyncStorage.multiGet(['captain_api_url', 'captain_api_key']);
       await AsyncStorage.multiSet([
         ['captain_api_url', apiUrl],
         ['captain_api_key', apiKey],
       ]);
       resetClient();
       const ok = await testConnection();
+      if (!ok) {
+        await AsyncStorage.multiSet(prev.map(([k, v]) => [k, v ?? '']));
+        resetClient();
+      }
       setStatus(ok ? 'connected' : 'failed');
     } catch {
       setStatus('failed');
@@ -118,13 +177,28 @@ export default function SettingsScreen() {
     }
   };
 
+  const handlePersonalityChange = async (personalityKey) => {
+    const p = PERSONALITIES.find(x => x.key === personalityKey);
+    if (!p) return;
+    await updateSetting('personality', personalityKey);
+    try {
+      const baseUrl = apiUrl || 'https://callova.live/captain';
+      const key = apiKey || '';
+      await fetch(`${baseUrl}/api/personality`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-API-Key': key },
+        body: JSON.stringify({ formality: p.formality, humor: p.humor, verbosity: p.verbosity }),
+      });
+    } catch {}
+  };
+
   const handleConnectGoogle = () => {
     const baseUrl = apiUrl || 'https://callova.live/captain';
     Linking.openURL(`${baseUrl}/api/auth/google`);
   };
 
   const handleClearMemory = () => {
-    Alert.alert('Clear Captain Memory', 'This will erase all of Captain\'s learned facts about you. Are you sure?', [
+    Alert.alert('Clear Captain Memory', "This will erase all of Captain's learned facts about you. Are you sure?", [
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Clear',
@@ -132,12 +206,12 @@ export default function SettingsScreen() {
         onPress: async () => {
           try {
             const baseUrl = apiUrl || 'https://callova.live/captain';
-            const key = apiKey || 'Ml2znOnV_iylluaiXn-9Me8JIHVP0eu95yw-V6koqlI';
+            const key = apiKey || '';
             await fetch(`${baseUrl}/api/identity`, {
               method: 'DELETE',
               headers: { 'X-API-Key': key },
             });
-            Alert.alert('Done', 'Captain\'s memory has been cleared.');
+            Alert.alert('Done', "Captain's memory has been cleared.");
           } catch {
             Alert.alert('Error', 'Could not clear memory.');
           }
@@ -147,106 +221,244 @@ export default function SettingsScreen() {
   };
 
   const SettingRow = ({ icon, label, children }) => (
-    <View style={styles.settingRow}>
+    <View style={[styles.settingRow, { borderBottomColor: theme.divider }]}>
       <View style={styles.settingLeft}>
-        <MaterialIcons name={icon} size={18} color="#888" />
-        <Text style={styles.settingLabel}>{label}</Text>
+        <MaterialIcons name={icon} size={18} color={theme.fgTertiary} />
+        <Text style={[styles.settingLabel, { color: theme.fgSecondary }]}>{label}</Text>
       </View>
       {children}
     </View>
   );
 
+  const s = (bg) => ([styles.section, { backgroundColor: bg || theme.sectionBg }]);
+
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Voice</Text>
+    <ScrollView style={[styles.container, { backgroundColor: theme.bg }]} contentContainerStyle={styles.content}>
+
+      {/* ── Appearance ── */}
+      <View style={s()}>
+        <Text style={[styles.sectionTitle, { color: theme.accent }]}>Appearance</Text>
+
+        {/* Mode toggle */}
+        <View style={[styles.modeToggle, { backgroundColor: theme.inputBg, borderColor: theme.divider }]}>
+          {MODES.map(m => {
+            const active = mode === m.key;
+            return (
+              <Pressable
+                key={m.key}
+                onPress={() => setMode(m.key)}
+                style={[
+                  styles.modeBtn,
+                  active && { backgroundColor: theme.accent + '22' },
+                ]}
+              >
+                <MaterialIcons name={m.icon} size={16} color={active ? theme.accent : theme.fgTertiary} />
+                <Text style={[styles.modeBtnText, { color: active ? theme.accent : theme.fgTertiary }]}>
+                  {m.label}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
+
+        {/* Color swatches */}
+        <Text style={[styles.subLabel, { color: theme.fgTertiary }]}>Color</Text>
+        <View style={styles.swatchRow}>
+          {Object.keys(PALETTE).map(key => (
+            <ThemeSwatch
+              key={key}
+              colorKey={key}
+              isSelected={colorKey === key}
+              onPress={() => setColorKey(key)}
+              isDark={isDark}
+            />
+          ))}
+        </View>
+      </View>
+
+      {/* ── Personality ── */}
+      <View style={s()}>
+        <Text style={[styles.sectionTitle, { color: theme.accent }]}>Personality</Text>
+        <Text style={[styles.subLabel, { color: theme.fgTertiary }]}>How Captain talks to you</Text>
+        <View style={styles.personalityRow}>
+          {PERSONALITIES.map(p => {
+            const active = settings.personality === p.key;
+            return (
+              <Pressable
+                key={p.key}
+                onPress={() => handlePersonalityChange(p.key)}
+                style={[
+                  styles.personalityChip,
+                  {
+                    borderColor: active ? theme.accent : theme.divider,
+                    backgroundColor: active ? theme.accent + '18' : theme.inputBg,
+                  },
+                ]}
+              >
+                <MaterialIcons name={p.icon} size={20} color={active ? theme.accent : theme.fgTertiary} />
+                <Text style={[styles.personalityLabel, { color: active ? theme.accent : theme.fgSecondary }]}>
+                  {p.label}
+                </Text>
+                <Text style={[styles.personalityDesc, { color: theme.fgTertiary }]}>{p.desc}</Text>
+              </Pressable>
+            );
+          })}
+        </View>
+      </View>
+
+      {/* ── Modes ── */}
+      <View style={s()}>
+        <Text style={[styles.sectionTitle, { color: theme.accent }]}>Modes</Text>
+        <SettingRow icon="directions-car" label="Drive Mode">
+          <Switch
+            value={settings.driveMode}
+            onValueChange={v => updateSetting('driveMode', v)}
+            trackColor={{ false: theme.switchTrackOff, true: theme.switchTrackOn }}
+            thumbColor={settings.driveMode ? theme.switchThumbOn : theme.switchThumbOff}
+          />
+        </SettingRow>
+        <SettingRow icon="volume-off" label="Whisper Mode">
+          <Switch
+            value={settings.whisperMode}
+            onValueChange={v => updateSetting('whisperMode', v)}
+            trackColor={{ false: theme.switchTrackOff, true: theme.switchTrackOn }}
+            thumbColor={settings.whisperMode ? theme.switchThumbOn : theme.switchThumbOff}
+          />
+        </SettingRow>
+        <SettingRow icon="event" label="Meeting Mode">
+          <Switch
+            value={settings.meetingMode}
+            onValueChange={v => updateSetting('meetingMode', v)}
+            trackColor={{ false: theme.switchTrackOff, true: '#f8717140' }}
+            thumbColor={settings.meetingMode ? '#f87171' : theme.switchThumbOff}
+          />
+        </SettingRow>
+        <SettingRow icon="center-focus-strong" label="Focus Mode">
+          <Switch
+            value={settings.focusMode}
+            onValueChange={v => updateSetting('focusMode', v)}
+            trackColor={{ false: theme.switchTrackOff, true: theme.switchTrackOn }}
+            thumbColor={settings.focusMode ? theme.switchThumbOn : theme.switchThumbOff}
+          />
+        </SettingRow>
+      </View>
+
+      {/* ── Voice ── */}
+      <View style={s()}>
+        <Text style={[styles.sectionTitle, { color: theme.accent }]}>Voice</Text>
         <SettingRow icon="volume-up" label="Speak responses">
           <Switch
             value={settings.voiceEnabled}
             onValueChange={v => updateSetting('voiceEnabled', v)}
-            trackColor={{ false: '#1e293b', true: '#6c9cff40' }}
-            thumbColor={settings.voiceEnabled ? '#6c9cff' : '#555'}
+            trackColor={{ false: theme.switchTrackOff, true: theme.switchTrackOn }}
+            thumbColor={settings.voiceEnabled ? theme.switchThumbOn : theme.switchThumbOff}
           />
         </SettingRow>
+        <SettingRow icon="mic" label="Auto-listen on open">
+          <Switch
+            value={settings.autoListen}
+            onValueChange={v => updateSetting('autoListen', v)}
+            trackColor={{ false: theme.switchTrackOff, true: theme.switchTrackOn }}
+            thumbColor={settings.autoListen ? theme.switchThumbOn : theme.switchThumbOff}
+          />
+        </SettingRow>
+        <SettingRow icon="loop" label="Ambient mode (re-listen after speaking)">
+          <Switch
+            value={settings.ambientMode}
+            onValueChange={v => updateSetting('ambientMode', v)}
+            trackColor={{ false: theme.switchTrackOff, true: theme.switchTrackOn }}
+            thumbColor={settings.ambientMode ? theme.switchThumbOn : theme.switchThumbOff}
+          />
+        </SettingRow>
+        <View style={[styles.settingRow, { borderBottomColor: theme.divider }]}>
+          <View style={styles.settingLeft}>
+            <MaterialIcons name="speed" size={18} color={theme.fgTertiary} />
+            <Text style={[styles.settingLabel, { color: theme.fgSecondary }]}>Voice speed</Text>
+          </View>
+          <View style={styles.speedChips}>
+            {[0.75, 1.0, 1.25, 1.5].map(v => {
+              const active = settings.voiceSpeed === v;
+              return (
+                <Pressable
+                  key={v}
+                  onPress={() => updateSetting('voiceSpeed', v)}
+                  style={[styles.speedChip, active && { backgroundColor: theme.accent + '20', borderColor: theme.accent }]}
+                >
+                  <Text style={[styles.speedChipText, { color: active ? theme.accent : theme.fgTertiary }]}>
+                    {v}x
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+        </View>
       </View>
 
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Notifications</Text>
+      {/* ── Notifications ── */}
+      <View style={s()}>
+        <Text style={[styles.sectionTitle, { color: theme.accent }]}>Notifications</Text>
         <SettingRow icon="notification-important" label="New bookings">
-          <Switch
-            value={settings.notifyNewBookings}
-            onValueChange={v => updateSetting('notifyNewBookings', v)}
-            trackColor={{ false: '#1e293b', true: '#6c9cff40' }}
-            thumbColor={settings.notifyNewBookings ? '#6c9cff' : '#555'}
-          />
+          <Switch value={settings.notifyNewBookings} onValueChange={v => updateSetting('notifyNewBookings', v)}
+            trackColor={{ false: theme.switchTrackOff, true: theme.switchTrackOn }}
+            thumbColor={settings.notifyNewBookings ? theme.switchThumbOn : theme.switchThumbOff} />
         </SettingRow>
         <SettingRow icon="cancel" label="Cancellations">
-          <Switch
-            value={settings.notifyCancellations}
-            onValueChange={v => updateSetting('notifyCancellations', v)}
-            trackColor={{ false: '#1e293b', true: '#6c9cff40' }}
-            thumbColor={settings.notifyCancellations ? '#6c9cff' : '#555'}
-          />
+          <Switch value={settings.notifyCancellations} onValueChange={v => updateSetting('notifyCancellations', v)}
+            trackColor={{ false: theme.switchTrackOff, true: theme.switchTrackOn }}
+            thumbColor={settings.notifyCancellations ? theme.switchThumbOn : theme.switchThumbOff} />
         </SettingRow>
         <SettingRow icon="cloud" label="Weather alerts">
-          <Switch
-            value={settings.notifyWeatherAlerts}
-            onValueChange={v => updateSetting('notifyWeatherAlerts', v)}
-            trackColor={{ false: '#1e293b', true: '#6c9cff40' }}
-            thumbColor={settings.notifyWeatherAlerts ? '#6c9cff' : '#555'}
-          />
+          <Switch value={settings.notifyWeatherAlerts} onValueChange={v => updateSetting('notifyWeatherAlerts', v)}
+            trackColor={{ false: theme.switchTrackOff, true: theme.switchTrackOn }}
+            thumbColor={settings.notifyWeatherAlerts ? theme.switchThumbOn : theme.switchThumbOff} />
         </SettingRow>
         <SettingRow icon="wb-sunny" label="Morning/evening briefings">
-          <Switch
-            value={settings.notifyBriefings}
-            onValueChange={v => updateSetting('notifyBriefings', v)}
-            trackColor={{ false: '#1e293b', true: '#6c9cff40' }}
-            thumbColor={settings.notifyBriefings ? '#6c9cff' : '#555'}
-          />
+          <Switch value={settings.notifyBriefings} onValueChange={v => updateSetting('notifyBriefings', v)}
+            trackColor={{ false: theme.switchTrackOff, true: theme.switchTrackOn }}
+            thumbColor={settings.notifyBriefings ? theme.switchThumbOn : theme.switchThumbOff} />
         </SettingRow>
         <SettingRow icon="do-not-disturb" label="Do Not Disturb">
-          <Switch
-            value={settings.doNotDisturb}
-            onValueChange={v => updateSetting('doNotDisturb', v)}
-            trackColor={{ false: '#1e293b', true: '#f8717140' }}
-            thumbColor={settings.doNotDisturb ? '#f87171' : '#555'}
-          />
+          <Switch value={settings.doNotDisturb} onValueChange={v => updateSetting('doNotDisturb', v)}
+            trackColor={{ false: theme.switchTrackOff, true: '#f8717140' }}
+            thumbColor={settings.doNotDisturb ? '#f87171' : theme.switchThumbOff} />
         </SettingRow>
       </View>
 
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Integrations</Text>
-        <Pressable onPress={handleConnectGoogle} style={styles.integrationBtn}>
-          <MaterialIcons name="event" size={18} color={googleConnected ? '#4ade80' : '#888'} />
-          <Text style={styles.integrationText}>
+      {/* ── Integrations ── */}
+      <View style={s()}>
+        <Text style={[styles.sectionTitle, { color: theme.accent }]}>Integrations</Text>
+        <Pressable onPress={handleConnectGoogle} style={[styles.integrationBtn, { backgroundColor: theme.inputBg }]}>
+          <MaterialIcons name="event" size={18} color={googleConnected ? '#4ade80' : theme.fgTertiary} />
+          <Text style={[styles.integrationText, { color: theme.fgSecondary }]}>
             {googleConnected ? 'Google Calendar Connected' : 'Connect Google Calendar & Gmail'}
           </Text>
-          <MaterialIcons name={googleConnected ? 'check-circle' : 'chevron-right'} size={18} color={googleConnected ? '#4ade80' : '#555'} />
+          <MaterialIcons name={googleConnected ? 'check-circle' : 'chevron-right'} size={18} color={googleConnected ? '#4ade80' : theme.fgTertiary} />
         </Pressable>
       </View>
 
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Connection</Text>
-        <Text style={styles.label}>Server URL</Text>
+      {/* ── Connection ── */}
+      <View style={s()}>
+        <Text style={[styles.sectionTitle, { color: theme.accent }]}>Connection</Text>
+        <Text style={[styles.label, { color: theme.fgTertiary }]}>Server URL</Text>
         <TextInput
-          style={styles.input}
+          style={[styles.input, { backgroundColor: theme.inputBg, color: theme.fgSecondary, borderColor: theme.inputBorder }]}
           placeholder="https://callova.live/captain"
-          placeholderTextColor="#444"
+          placeholderTextColor={theme.fgTertiary}
           value={apiUrl}
           onChangeText={setApiUrl}
           autoCapitalize="none"
           autoCorrect={false}
         />
         <View style={styles.keyHeader}>
-          <Text style={styles.label}>API Key</Text>
+          <Text style={[styles.label, { color: theme.fgTertiary }]}>API Key</Text>
           <Pressable onPress={() => setShowApiKey(!showApiKey)} style={styles.toggleBtn}>
-            <MaterialIcons name={showApiKey ? 'visibility-off' : 'visibility'} size={16} color="#6c9cff" />
+            <MaterialIcons name={showApiKey ? 'visibility-off' : 'visibility'} size={16} color={theme.accent} />
           </Pressable>
         </View>
         <TextInput
-          style={styles.input}
+          style={[styles.input, { backgroundColor: theme.inputBg, color: theme.fgSecondary, borderColor: theme.inputBorder }]}
           placeholder="Paste your API key"
-          placeholderTextColor="#444"
+          placeholderTextColor={theme.fgTertiary}
           value={apiKey}
           onChangeText={setApiKey}
           secureTextEntry={!showApiKey}
@@ -254,12 +466,12 @@ export default function SettingsScreen() {
           autoCorrect={false}
         />
         <View style={styles.buttonRow}>
-          <Pressable onPress={handleTest} disabled={testing} style={styles.testBtn}>
-            <MaterialIcons name="wifi-tethering" size={16} color="#6c9cff" />
-            <Text style={styles.testText}>{testing ? 'Testing...' : 'Test'}</Text>
+          <Pressable onPress={handleTest} disabled={testing} style={[styles.testBtn, { borderColor: theme.accent + '30', backgroundColor: theme.accent + '10' }]}>
+            <MaterialIcons name="wifi-tethering" size={16} color={theme.accent} />
+            <Text style={[styles.testText, { color: theme.accent }]}>{testing ? 'Testing...' : 'Test'}</Text>
           </Pressable>
-          <Pressable onPress={handleSave} style={styles.saveBtn}>
-            <Text style={styles.saveText}>Save</Text>
+          <Pressable onPress={handleSave} style={[styles.saveBtn, { backgroundColor: theme.accent }]}>
+            <Text style={[styles.saveText, { color: isDark ? '#000' : '#fff' }]}>Save</Text>
           </Pressable>
         </View>
         {status ? (
@@ -276,11 +488,12 @@ export default function SettingsScreen() {
         ) : null}
       </View>
 
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Updates</Text>
-        <Pressable onPress={handleUpdate} disabled={updating} style={styles.updateBtn}>
-          <MaterialIcons name="system-update" size={18} color="#6c9cff" />
-          <Text style={styles.updateText}>{updating ? updateStatus : 'Check for Updates'}</Text>
+      {/* ── Updates ── */}
+      <View style={s()}>
+        <Text style={[styles.sectionTitle, { color: theme.accent }]}>Updates</Text>
+        <Pressable onPress={handleUpdate} disabled={updating} style={[styles.updateBtn, { borderColor: theme.accent + '30', backgroundColor: theme.accent + '10' }]}>
+          <MaterialIcons name="system-update" size={18} color={theme.accent} />
+          <Text style={[styles.updateText, { color: theme.accent }]}>{updating ? updateStatus : 'Check for Updates'}</Text>
         </Pressable>
         {!updating && updateStatus ? (
           <Text style={[styles.updateResult, updateStatus === 'Up to date' ? styles.statusOk : styles.statusFail]}>
@@ -289,167 +502,180 @@ export default function SettingsScreen() {
         ) : null}
       </View>
 
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Data</Text>
+      {/* ── Data ── */}
+      <View style={s()}>
+        <Text style={[styles.sectionTitle, { color: theme.accent }]}>Data</Text>
         <Pressable onPress={handleClearMemory} style={styles.dangerBtn}>
           <MaterialIcons name="delete-forever" size={18} color="#f87171" />
           <Text style={styles.dangerText}>Clear Captain's Memory</Text>
         </Pressable>
       </View>
 
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>About</Text>
-        <View style={styles.aboutRow}>
-          <Text style={styles.aboutLabel}>Version</Text>
-          <Text style={styles.aboutValue}>2.1.0</Text>
-        </View>
-        <View style={styles.aboutRow}>
-          <Text style={styles.aboutLabel}>AI Models</Text>
-          <Text style={styles.aboutValue}>Claude Haiku / Sonnet / Opus</Text>
-        </View>
-        <View style={styles.aboutRow}>
-          <Text style={styles.aboutLabel}>Routing</Text>
-          <Text style={styles.aboutValue}>Auto (complexity-based)</Text>
-        </View>
-        <View style={styles.aboutRow}>
-          <Text style={styles.aboutLabel}>Voice</Text>
-          <Text style={styles.aboutValue}>OpenAI TTS (Onyx)</Text>
-        </View>
-        <View style={styles.aboutRow}>
-          <Text style={styles.aboutLabel}>Search</Text>
-          <Text style={styles.aboutValue}>Brave Search API</Text>
-        </View>
+      {/* ── About ── */}
+      <View style={s()}>
+        <Text style={[styles.sectionTitle, { color: theme.accent }]}>About</Text>
+        {[
+          ['Version', '2.2.0'],
+          ['AI Models', 'Claude Haiku / Sonnet / Opus'],
+          ['Routing', 'Auto (complexity-based)'],
+          ['Voice', 'OpenAI TTS (Onyx)'],
+          ['Search', 'Brave Search API'],
+        ].map(([label, value]) => (
+          <View key={label} style={[styles.aboutRow, { borderBottomColor: theme.divider }]}>
+            <Text style={[styles.aboutLabel, { color: theme.fgTertiary }]}>{label}</Text>
+            <Text style={[styles.aboutValue, { color: theme.fgSecondary }]}>{value}</Text>
+          </View>
+        ))}
       </View>
+
     </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#0a0e17' },
-  content: { padding: 20, paddingBottom: 40 },
+  container: { flex: 1 },
+  content: { padding: 16, paddingBottom: 40, gap: 12 },
   section: {
-    marginBottom: 24,
-    backgroundColor: '#111827',
     borderRadius: 16,
     padding: 20,
   },
   sectionTitle: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#6c9cff',
+    fontSize: 12,
+    fontWeight: '700',
     textTransform: 'uppercase',
     letterSpacing: 1,
     marginBottom: 16,
   },
-  label: { fontSize: 13, fontWeight: '500', marginBottom: 8, color: '#888' },
-  keyHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 8,
+  subLabel: {
+    fontSize: 12,
+    fontWeight: '500',
+    marginBottom: 10,
+    marginTop: 4,
   },
-  toggleBtn: { padding: 4 },
-  input: {
+
+  /* Mode toggle */
+  modeToggle: {
+    flexDirection: 'row',
+    borderRadius: 12,
     borderWidth: 1,
-    borderColor: '#1e293b',
-    borderRadius: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
+    padding: 3,
     marginBottom: 16,
-    fontSize: 14,
-    color: '#e8e8e8',
-    backgroundColor: '#0a0e17',
   },
-  buttonRow: { flexDirection: 'row', gap: 12 },
-  testBtn: {
+  modeBtn: {
     flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 6,
-    paddingVertical: 12,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: '#6c9cff30',
-    backgroundColor: '#6c9cff10',
+    gap: 5,
+    paddingVertical: 8,
+    borderRadius: 9,
   },
-  testText: { color: '#6c9cff', fontWeight: '600', fontSize: 14 },
-  saveBtn: {
-    flex: 1,
-    paddingVertical: 12,
-    borderRadius: 10,
-    alignItems: 'center',
-    backgroundColor: '#6c9cff',
-  },
-  saveText: { color: '#0a0e17', fontWeight: '700', fontSize: 14 },
-  statusBar: {
+  modeBtnText: { fontSize: 13, fontWeight: '500' },
+
+  /* Swatches */
+  swatchRow: { flexDirection: 'row', justifyContent: 'space-between' },
+  swatchWrapper: { alignItems: 'center', gap: 6 },
+  swatch: {
+    width: 52,
+    height: 52,
+    borderRadius: 14,
     flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginTop: 16,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderRadius: 10,
+    overflow: 'hidden',
+    borderWidth: 1.5,
+    borderColor: 'transparent',
+    position: 'relative',
   },
-  statusOk: { backgroundColor: 'rgba(74, 222, 128, 0.08)' },
-  statusFail: { backgroundColor: 'rgba(248, 113, 113, 0.08)' },
-  statusText: { fontSize: 13, fontWeight: '500' },
-  aboutRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    paddingVertical: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: '#1e293b',
-  },
-  aboutLabel: { fontSize: 14, color: '#888' },
-  aboutValue: { fontSize: 14, color: '#e8e8e8' },
-  updateBtn: {
-    flexDirection: 'row',
+  swatchHalf: { flex: 1, height: '100%' },
+  swatchCheck: {
+    position: 'absolute',
+    bottom: 3,
+    right: 3,
+    width: 17,
+    height: 17,
+    borderRadius: 9,
+    backgroundColor: 'rgba(255,255,255,0.92)',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 8,
-    paddingVertical: 14,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: '#6c9cff30',
-    backgroundColor: '#6c9cff10',
   },
-  updateText: { color: '#6c9cff', fontWeight: '600', fontSize: 14 },
-  updateResult: { textAlign: 'center', marginTop: 10, fontSize: 13, fontWeight: '500' },
+  swatchLabel: { fontSize: 10 },
+
+  /* Setting rows */
   settingRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingVertical: 12,
     borderBottomWidth: 1,
-    borderBottomColor: '#1e293b',
   },
-  settingLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
+  settingLeft: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  settingLabel: { fontSize: 14 },
+
+  /* Personality */
+  personalityRow: { flexDirection: 'row', gap: 8 },
+  personalityChip: {
+    flex: 1, alignItems: 'center', gap: 4,
+    paddingVertical: 12, borderRadius: 12, borderWidth: 1,
   },
-  settingLabel: { fontSize: 14, color: '#e8e8e8' },
-  integrationBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    paddingVertical: 14,
+  personalityLabel: { fontSize: 13, fontWeight: '600' },
+  personalityDesc: { fontSize: 10, textAlign: 'center' },
+
+  label: { fontSize: 13, fontWeight: '500', marginBottom: 8 },
+  keyHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
+  toggleBtn: { padding: 4 },
+  input: {
+    borderWidth: 1,
     borderRadius: 10,
     paddingHorizontal: 14,
-    backgroundColor: '#0a0e17',
+    paddingVertical: 12,
+    marginBottom: 16,
+    fontSize: 14,
   },
-  integrationText: { flex: 1, fontSize: 14, color: '#e8e8e8' },
+  buttonRow: { flexDirection: 'row', gap: 12 },
+  testBtn: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    gap: 6, paddingVertical: 12, borderRadius: 10, borderWidth: 1,
+  },
+  testText: { fontWeight: '600', fontSize: 14 },
+  saveBtn: { flex: 1, paddingVertical: 12, borderRadius: 10, alignItems: 'center' },
+  saveText: { fontWeight: '700', fontSize: 14 },
+  statusBar: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    marginTop: 16, paddingHorizontal: 14, paddingVertical: 10, borderRadius: 10,
+  },
+  statusOk: { backgroundColor: 'rgba(74, 222, 128, 0.08)' },
+  statusFail: { backgroundColor: 'rgba(248, 113, 113, 0.08)' },
+  statusText: { fontSize: 13, fontWeight: '500' },
+
+  integrationBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 12,
+    paddingVertical: 14, borderRadius: 10, paddingHorizontal: 14,
+  },
+  integrationText: { flex: 1, fontSize: 14 },
+
+  updateBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    gap: 8, paddingVertical: 14, borderRadius: 10, borderWidth: 1,
+  },
+  updateText: { fontWeight: '600', fontSize: 14 },
+  updateResult: { textAlign: 'center', marginTop: 10, fontSize: 13, fontWeight: '500' },
+
+  speedChips: { flexDirection: 'row', gap: 6 },
+  speedChip: {
+    paddingHorizontal: 8, paddingVertical: 4,
+    borderRadius: 8, borderWidth: 1, borderColor: 'transparent',
+  },
+  speedChipText: { fontSize: 12, fontWeight: '600' },
   dangerBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    paddingVertical: 14,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: '#f8717130',
-    backgroundColor: '#f8717110',
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    gap: 8, paddingVertical: 14, borderRadius: 10, borderWidth: 1,
+    borderColor: '#f8717130', backgroundColor: '#f8717110',
   },
   dangerText: { color: '#f87171', fontWeight: '600', fontSize: 14 },
+
+  aboutRow: {
+    flexDirection: 'row', justifyContent: 'space-between',
+    paddingVertical: 10, borderBottomWidth: 1,
+  },
+  aboutLabel: { fontSize: 14 },
+  aboutValue: { fontSize: 14 },
 });
