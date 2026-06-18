@@ -161,7 +161,23 @@ function AppNavigator() {
     (async () => {
       // Load onboarding status
       const onboarding = await AsyncStorage.getItem('captain_onboarding_complete');
-      setOnboardingDone(onboarding === 'true');
+      if (onboarding === 'true') {
+        setOnboardingDone(true);
+      } else {
+        // Existing users who predate onboarding: skip if they already have messages
+        try {
+          const msgs = await AsyncStorage.getItem('captain_messages');
+          const hasMessages = msgs && JSON.parse(msgs).length > 0;
+          if (hasMessages) {
+            await AsyncStorage.setItem('captain_onboarding_complete', 'true');
+            setOnboardingDone(true);
+          } else {
+            setOnboardingDone(false);
+          }
+        } catch {
+          setOnboardingDone(true);
+        }
+      }
 
       // Load biometric setting
       try {
