@@ -185,7 +185,7 @@ function HighlightedText({ text, highlight, style }) {
   );
 }
 
-export default function ConversationItem({ message, isUser, onFeedback, interactionId, modelUsed, complexity, isStreaming, timestamp, onRerun, highlightText, isSystem }) {
+export default function ConversationItem({ message, isUser, onFeedback, interactionId, modelUsed, complexity, confidence, isStreaming, timestamp, onRerun, highlightText, isSystem }) {
   const { theme } = useTheme();
   const [feedbackGiven, setFeedbackGiven] = useState(null);
   const [copied, setCopied] = useState(false);
@@ -371,7 +371,7 @@ export default function ConversationItem({ message, isUser, onFeedback, interact
             </Text>
           ) : null}
 
-          {!isUser && (modelUsed || complexity) ? (
+          {!isUser && (modelUsed || complexity || confidence === 'medium' || confidence === 'low') ? (
             <View style={styles.metaRow}>
               {modelUsed ? (
                 <Text style={[styles.modelTag, { color: theme.fgTertiary }]}>{modelUsed}</Text>
@@ -381,6 +381,18 @@ export default function ConversationItem({ message, isUser, onFeedback, interact
                   <Text style={[styles.complexityText, { color: COMPLEXITY_COLORS[complexity] || '#666' }]}>
                     {complexity}
                   </Text>
+                </View>
+              ) : null}
+              {confidence === 'medium' ? (
+                <View style={styles.confidenceBadgeMedium}>
+                  <Text style={styles.confidenceSymbolMedium}>~</Text>
+                  <Text style={styles.confidenceTextMedium}>Estimated</Text>
+                </View>
+              ) : null}
+              {confidence === 'low' ? (
+                <View style={styles.confidenceBadgeLow}>
+                  <Text style={styles.confidenceSymbolLow}>?</Text>
+                  <Text style={styles.confidenceTextLow}>Uncertain</Text>
                 </View>
               ) : null}
             </View>
@@ -508,6 +520,40 @@ const styles = StyleSheet.create({
   },
   feedbackActiveBad: {
     backgroundColor: 'rgba(248, 113, 113, 0.1)',
+  },
+  confidenceBadgeMedium: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+  },
+  confidenceSymbolMedium: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#94a3b8',
+    lineHeight: 14,
+  },
+  confidenceTextMedium: {
+    fontSize: 10,
+    fontWeight: '500',
+    color: '#94a3b8',
+    letterSpacing: 0.3,
+  },
+  confidenceBadgeLow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+  },
+  confidenceSymbolLow: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#fbbf24',
+    lineHeight: 14,
+  },
+  confidenceTextLow: {
+    fontSize: 10,
+    fontWeight: '500',
+    color: '#fbbf24',
+    letterSpacing: 0.3,
   },
   cardContainer: {
     backgroundColor: 'transparent',

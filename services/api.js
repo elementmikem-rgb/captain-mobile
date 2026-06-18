@@ -140,6 +140,7 @@ export async function sendMessageStream(message, onChunk, onMeta, onDone, opts =
   const decoder = new TextDecoder();
   let buffer = '';
   let fullText = '';
+  let confidenceLevel = null;
 
   while (true) {
     const { done, value } = await reader.read();
@@ -156,8 +157,10 @@ export async function sendMessageStream(message, onChunk, onMeta, onDone, opts =
           onChunk(data.text, fullText);
         } else if (data.type === 'meta') {
           onMeta(data);
+        } else if (data.type === 'confidence') {
+          confidenceLevel = data.level;
         } else if (data.type === 'done') {
-          onDone(data.full_text, data);
+          onDone(data.full_text, { ...data, confidence: confidenceLevel });
         }
       } catch {}
     }
