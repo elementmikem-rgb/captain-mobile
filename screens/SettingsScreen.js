@@ -443,6 +443,53 @@ export default function SettingsScreen({ navigation }) {
         ))}
       </View>
 
+      {/* ── Routines ── */}
+      <View style={s()}>
+        <Text style={[styles.sectionTitle, { color: theme.accent }]}>Routines</Text>
+        <Text style={[styles.subLabel, { color: theme.fgTertiary }]}>Say a trigger phrase to run a multi-step routine automatically</Text>
+        {[
+          {
+            name: 'Morning',
+            icon: 'wb-sunny',
+            color: '#fbbf24',
+            triggers: '"morning routine"  |  "start my morning"  |  "good morning captain"',
+            steps: 'Briefing + weather + bookings, urgent messages check, contextual chips',
+          },
+          {
+            name: 'Evening',
+            icon: 'nights-stay',
+            color: '#818cf8',
+            triggers: '"evening routine"  |  "wrap up my day"  |  "end of day captain"',
+            steps: 'Day summary, tomorrow focus prompt, session summary offer',
+          },
+          {
+            name: 'Focus',
+            icon: 'center-focus-strong',
+            color: '#34d399',
+            triggers: '"focus routine"  |  "deep work mode"  |  "I need to focus"',
+            steps: 'Whisper ON, ambient OFF, focus timer offer',
+          },
+          {
+            name: 'Travel',
+            icon: 'flight-takeoff',
+            color: '#38bdf8',
+            triggers: '"travel mode"  |  "I\'m traveling"  |  "heading out"',
+            steps: 'Drive mode ON, weather brief, booking count',
+          },
+        ].map(routine => (
+          <View key={routine.name} style={[styles.macroCard, { backgroundColor: theme.inputBg, borderColor: theme.divider }]}>
+            <View style={[styles.macroIconWrap, { backgroundColor: routine.color + '20' }]}>
+              <MaterialIcons name={routine.icon} size={18} color={routine.color} />
+            </View>
+            <View style={styles.macroBody}>
+              <Text style={[styles.macroName, { color: theme.fgSecondary }]}>{routine.name} Routine</Text>
+              <Text style={[styles.macroTrigger, { color: routine.color }]}>{routine.triggers}</Text>
+              <Text style={[styles.macroDesc, { color: theme.fgTertiary }]}>{routine.steps}</Text>
+            </View>
+          </View>
+        ))}
+      </View>
+
       {/* ── Notifications ── */}
       <View style={s()}>
         <Text style={[styles.sectionTitle, { color: theme.accent }]}>Notifications</Text>
@@ -584,6 +631,14 @@ export default function SettingsScreen({ navigation }) {
         >
           <MaterialIcons name="history" size={18} color={theme.accent} />
           <Text style={[styles.integrationText, { color: theme.fgSecondary }]}>Activity Log</Text>
+          <MaterialIcons name="chevron-right" size={18} color={theme.fgTertiary} />
+        </Pressable>
+        <Pressable
+          onPress={() => navigation.navigate('Search')}
+          style={[styles.integrationBtn, { backgroundColor: theme.inputBg, marginTop: 8 }]}
+        >
+          <MaterialIcons name="manage-search" size={18} color={theme.accent} />
+          <Text style={[styles.integrationText, { color: theme.fgSecondary }]}>Search Everything</Text>
           <MaterialIcons name="chevron-right" size={18} color={theme.fgTertiary} />
         </Pressable>
       </View>

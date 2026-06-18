@@ -339,6 +339,16 @@ export async function summarizeSession(messages) {
   }
 }
 
+export async function summarizeMeeting(transcript) {
+  const c = await getClient();
+  try {
+    const response = await c.post('/api/meeting/summarize', { transcript });
+    return response.data;
+  } catch (error) {
+    throw new Error(error.response?.data?.error || 'Meeting summarize failed');
+  }
+}
+
 export async function generateDraft({ type, recipient, context, tone }) {
   const c = await getClient();
   try {
@@ -371,6 +381,23 @@ export async function getSuggestions(lastAssistantMessage, userMessage) {
   const c = await getClient();
   const response = await c.post('/api/suggestions', { lastAssistantMessage, userMessage });
   return response.data;
+}
+
+export async function getRoutineBriefing() {
+  let url = await AsyncStorage.getItem('captain_api_url') || DEFAULT_URL;
+  if (url.includes('192.168.')) { url = DEFAULT_URL; }
+  const key = await AsyncStorage.getItem('captain_api_key') || '';
+
+  const response = await fetch(`${url}/api/routine/briefing`, {
+    headers: { 'X-API-Key': key },
+  });
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.error || 'Routine briefing failed');
+  }
+
+  return response.json();
 }
 
 export async function sendVision(imageBase64, mimeType, prompt) {
