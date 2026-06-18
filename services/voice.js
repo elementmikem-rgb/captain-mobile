@@ -1,10 +1,14 @@
 import * as Speech from 'expo-speech';
 import { Audio } from 'expo-av';
-import {
-  ExpoSpeechRecognitionModule,
-  useSpeechRecognitionEvent,
-} from 'expo-speech-recognition';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+
+let ExpoSpeechRecognitionModule = null;
+let useSpeechRecognitionEvent = () => {};
+try {
+  const SpeechRec = require('expo-speech-recognition');
+  ExpoSpeechRecognitionModule = SpeechRec.ExpoSpeechRecognitionModule;
+  useSpeechRecognitionEvent = SpeechRec.useSpeechRecognitionEvent;
+} catch {}
 
 let currentSound = null;
 
@@ -13,12 +17,13 @@ let currentSound = null;
 let cancelToken = 0;
 
 export async function requestPermissions() {
+  if (!ExpoSpeechRecognitionModule) return false;
   const result = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
   return result.granted;
 }
 
 export function startListening() {
-  ExpoSpeechRecognitionModule.start({
+  ExpoSpeechRecognitionModule?.start({
     lang: 'en-US',
     interimResults: true,
     maxAlternatives: 1,
@@ -26,7 +31,7 @@ export function startListening() {
 }
 
 export function stopListening() {
-  ExpoSpeechRecognitionModule.stop();
+  ExpoSpeechRecognitionModule?.stop();
 }
 
 async function speakWithElevenLabs(text) {
