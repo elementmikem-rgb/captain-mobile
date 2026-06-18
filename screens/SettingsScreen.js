@@ -13,7 +13,8 @@ import {
 import { MaterialIcons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Updates from 'expo-updates';
-import * as LocalAuthentication from 'expo-local-authentication';
+let LocalAuthentication = null;
+try { LocalAuthentication = require('expo-local-authentication'); } catch {}
 import { testConnection, resetClient } from '../services/api';
 import { useTheme, PALETTE } from '../context/ThemeContext';
 
@@ -136,9 +137,11 @@ export default function SettingsScreen({ navigation }) {
 
       // Check biometric hardware availability
       try {
-        const hasHardware = await LocalAuthentication.hasHardwareAsync();
-        const isEnrolled = await LocalAuthentication.isEnrolledAsync();
-        setBiometricAvailable(hasHardware && isEnrolled);
+        if (LocalAuthentication) {
+          const hasHardware = await LocalAuthentication.hasHardwareAsync();
+          const isEnrolled = await LocalAuthentication.isEnrolledAsync();
+          setBiometricAvailable(hasHardware && isEnrolled);
+        }
       } catch {
         setBiometricAvailable(false);
       }

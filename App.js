@@ -4,7 +4,8 @@ import { View, Text, Pressable, StyleSheet, AppState } from 'react-native';
 import { NavigationContainer, DefaultTheme, DarkTheme as NavDarkTheme } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import * as LocalAuthentication from 'expo-local-authentication';
+let LocalAuthentication = null;
+try { LocalAuthentication = require('expo-local-authentication'); } catch {}
 import { MaterialIcons } from '@expo/vector-icons';
 import ChatScreen from './screens/ChatScreen';
 import SettingsScreen from './screens/SettingsScreen';
@@ -24,16 +25,16 @@ function LockScreen({ onUnlock, biometricType }) {
   const [authFailed, setAuthFailed] = useState(false);
 
   const typeLabel =
-    biometricType === LocalAuthentication.AuthenticationType.FACIAL_RECOGNITION
+    LocalAuthentication && biometricType === LocalAuthentication.AuthenticationType?.FACIAL_RECOGNITION
       ? 'Face ID'
-      : biometricType === LocalAuthentication.AuthenticationType.FINGERPRINT
+      : LocalAuthentication && biometricType === LocalAuthentication.AuthenticationType?.FINGERPRINT
       ? 'Touch ID / Fingerprint'
       : 'Biometrics';
 
   const handleUnlock = useCallback(async () => {
     setAuthFailed(false);
     try {
-      const result = await LocalAuthentication.authenticateAsync({
+      const result = await LocalAuthentication?.authenticateAsync({
         promptMessage: 'Unlock Captain',
         fallbackLabel: 'Use passcode',
       });
@@ -133,6 +134,7 @@ function AppNavigator() {
 
   // Attempt biometric authentication
   const authenticate = useCallback(async () => {
+    if (!LocalAuthentication) { setIsLocked(false); return; }
     try {
       const result = await LocalAuthentication.authenticateAsync({
         promptMessage: 'Unlock Captain',
@@ -143,7 +145,7 @@ function AppNavigator() {
       }
       // On failure we leave isLocked = true; LockScreen shows retry button
     } catch {
-      // Leave locked; user can tap Unlock to retry
+      setIsLocked(false); // Fail open if biometrics error
     }
   }, []);
 
@@ -157,14 +159,13 @@ function AppNavigator() {
       try {
         const saved = await AsyncStorage.getItem(SETTINGS_KEY);
         const settings = saved ? JSON.parse(saved) : {};
-        const enabled = settings.biometricLock === true;
+        const enabled = settings.biometricLock === true && LocalAuthentication != null;
         setBiometricEnabled(enabled);
 
         if (enabled) {
           const hasHardware = await LocalAuthentication.hasHardwareAsync();
           const isEnrolled = await LocalAuthentication.isEnrolledAsync();
           if (hasHardware && isEnrolled) {
-            // Determine type for display label
             const types = await LocalAuthentication.supportedAuthenticationTypesAsync();
             if (types.length > 0) setBiometricType(types[0]);
             setIsLocked(true);
