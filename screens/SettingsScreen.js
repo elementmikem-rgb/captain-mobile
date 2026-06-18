@@ -552,6 +552,14 @@ export default function SettingsScreen({ navigation }) {
           <Text style={[styles.integrationText, { color: theme.fgSecondary }]}>Intelligence Report</Text>
           <MaterialIcons name="chevron-right" size={18} color={theme.fgTertiary} />
         </Pressable>
+        <Pressable
+          onPress={() => navigation.navigate('ActivityLog')}
+          style={[styles.integrationBtn, { backgroundColor: theme.inputBg, marginTop: 8 }]}
+        >
+          <MaterialIcons name="history" size={18} color={theme.accent} />
+          <Text style={[styles.integrationText, { color: theme.fgSecondary }]}>Activity Log</Text>
+          <MaterialIcons name="chevron-right" size={18} color={theme.fgTertiary} />
+        </Pressable>
       </View>
 
       {/* ── Data ── */}

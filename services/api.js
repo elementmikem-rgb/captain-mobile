@@ -362,6 +362,12 @@ export async function deleteFollowup(id) {
   return response.data;
 }
 
+export async function getSuggestions(lastAssistantMessage, userMessage) {
+  const c = await getClient();
+  const response = await c.post('/api/suggestions', { lastAssistantMessage, userMessage });
+  return response.data;
+}
+
 export async function sendVision(imageBase64, mimeType, prompt) {
   let url = await AsyncStorage.getItem('captain_api_url') || DEFAULT_URL;
   if (url.includes('192.168.')) { url = DEFAULT_URL; }

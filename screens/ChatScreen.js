@@ -15,6 +15,7 @@ import {
   Image,
   Vibration,
   Share,
+  StatusBar,
 } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -23,7 +24,7 @@ import ConversationItem from '../components/ConversationItem';
 import MicButton from '../components/MicButton';
 import Waveform from '../components/Waveform';
 import { useTheme } from '../context/ThemeContext';
-import { sendMessage, sendMessageStream, sendFeedback, testConnection, getBriefing, getDailyBriefingStructured, registerPushToken, sendVision, getBookingsToday, getWeather, addReminder, addMemory, recallMemory, addDocument, addPersonMemory, addContact, summarizeSession, generateDraft, addFollowup } from '../services/api';
+import { sendMessage, sendMessageStream, sendFeedback, testConnection, getBriefing, getDailyBriefingStructured, registerPushToken, sendVision, getBookingsToday, getWeather, addReminder, addMemory, recallMemory, addDocument, addPersonMemory, addContact, summarizeSession, generateDraft, addFollowup, getSuggestions } from '../services/api';
 import {
   requestPermissions,
   startListening,
@@ -426,6 +427,7 @@ export default function ChatScreen({ navigation, route }) {
   const [isProcessing, setIsProcessing] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [lastModelUsed, setLastModelUsed] = useState('');
+  const [detectedLang, setDetectedLang] = useState(null); // null = english / hidden
   const [transcript, setTranscript] = useState('');
   const [textInput, setTextInput] = useState('');
   const [showKeyboard, setShowKeyboard] = useState(false);
@@ -441,6 +443,10 @@ export default function ChatScreen({ navigation, route }) {
   const [savedContact, setSavedContact] = useState(null); // { name, phone }
   const [queuedFollowup, setQueuedFollowup] = useState(null); // text string
   const [contextChips, setContextChips] = useState([]);
+  const [suggestions, setSuggestions] = useState([]);
+  const [suggestionsLoading, setSuggestionsLoading] = useState(false);
+  const suggestionsAnim = useRef(new Animated.Value(0)).current;
+  const lastUserMsgRef = useRef('');
   const [rerunHint, setRerunHint] = useState(false);
   const [searchingMemory, setSearchingMemory] = useState(false);
   const [voiceNoteMode, setVoiceNoteMode] = useState(false);
@@ -459,6 +465,8 @@ export default function ChatScreen({ navigation, route }) {
   const [weatherAlert, setWeatherAlert] = useState(null); // { alertText, severity }
   const weatherAlertAnim = useRef(new Animated.Value(0)).current;
   const weatherAlertDismissed = useRef(false);
+  const [hudMode, setHudMode] = useState(false);
+  const hudAnim = useRef(new Animated.Value(0)).current;
   const pressStartRef = useRef(null);
   const noteModeTimerRef = useRef(null);
   const chipAnim = useRef(new Animated.Value(0)).current;
@@ -470,6 +478,18 @@ export default function ChatScreen({ navigation, route }) {
     if (chipDismissTimer.current) clearTimeout(chipDismissTimer.current);
     Animated.timing(chipAnim, { toValue: 0, duration: 200, useNativeDriver: true }).start(() => setContextChips([]));
   }, [chipAnim]);
+
+  const dismissSuggestions = useCallback(() => {
+    Animated.timing(suggestionsAnim, { toValue: 0, duration: 180, useNativeDriver: true }).start(() => setSuggestions([]));
+  }, [suggestionsAnim]);
+
+  // Dismiss suggestions when user starts typing
+  useEffect(() => {
+    if (textInput.length > 0 && suggestions.length > 0) {
+      dismissSuggestions();
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [textInput]);
 
   // Session summary offer — trigger at 10, 20, 30 messages
   useEffect(() => {
@@ -965,6 +985,16 @@ export default function ChatScreen({ navigation, route }) {
   }, [appSettings.voiceSpeed]);
   // ────────────────────────────────────────────────────────────────────────────
 
+
+  const toggleHUD = useCallback(() => {
+    if (!hudMode) {
+      setHudMode(true);
+      hudAnim.setValue(0);
+      Animated.timing(hudAnim, { toValue: 1, duration: 300, useNativeDriver: true }).start();
+    } else {
+      Animated.timing(hudAnim, { toValue: 0, duration: 250, useNativeDriver: true }).start(() => setHudMode(false));
+    }
+  }, [hudMode, hudAnim]);
   const handleSend = useCallback(async (userText, imagePayload = null) => {
     if (inFlightRef.current) return;
     // ── Voice command interceptor (runs before everything else) ─────────────
@@ -1052,10 +1082,13 @@ export default function ChatScreen({ navigation, route }) {
     // ────────────────────────────────────────────────────────────────────────
 
     inFlightRef.current = true;
+    lastUserMsgRef.current = userText || '';
     setIsProcessing(true);
     setTranscript('');
     setPendingImage(null);
     setQuickReminder(null);
+    setSuggestions([]);
+    suggestionsAnim.setValue(0);
     setContextChips([]);
     chipAnim.setValue(0);
     if (chipDismissTimer.current) clearTimeout(chipDismissTimer.current);
@@ -1245,6 +1278,11 @@ export default function ChatScreen({ navigation, route }) {
           (meta) => {
             setLastModelUsed(meta.model || '');
             setMessages(prev => prev.map(m => m.id === captainMsgId ? { ...m, modelUsed: meta.model, complexity: meta.complexity } : m));
+            if (meta.lang && meta.lang !== 'english') {
+              setDetectedLang(meta.lang);
+            } else {
+              setDetectedLang(null);
+            }
           },
           (finalText) => {
             let finalMessages;
@@ -1266,6 +1304,17 @@ export default function ChatScreen({ navigation, route }) {
                   collapsed: false,
                 },
               }));
+            }
+            // Smart suggestions — fetch AI-generated follow-up chips
+            if (finalText.length > 30) {
+              setSuggestionsLoading(true);
+              getSuggestions(finalText, lastUserMsgRef.current).then(data => {
+                if (Array.isArray(data.suggestions) && data.suggestions.length > 0) {
+                  setSuggestions(data.suggestions);
+                  suggestionsAnim.setValue(0);
+                  Animated.timing(suggestionsAnim, { toValue: 1, duration: 350, useNativeDriver: true }).start();
+                }
+              }).catch(() => {}).finally(() => setSuggestionsLoading(false));
             }
           },
           opts
@@ -1481,6 +1530,13 @@ export default function ChatScreen({ navigation, route }) {
               <Text style={[styles.modeBadgeText, { color: '#f87171' }]}>Meeting</Text>
             </View>
           ) : null}
+          {detectedLang ? (
+            <View style={styles.langBadge}>
+              <Text style={styles.langBadgeText}>
+                {{ spanish: 'ES', french: 'FR', german: 'DE', portuguese: 'PT' }[detectedLang] || detectedLang.slice(0,2).toUpperCase()}
+              </Text>
+            </View>
+          ) : null}
           {searchMode && searchQuery.trim() ? (
             <View style={styles.searchResultBadge}>
               <Text style={[styles.searchResultText, { color: theme.accent }]}>
@@ -1496,6 +1552,9 @@ export default function ChatScreen({ navigation, route }) {
           </Pressable>
           <Pressable onPress={() => navigation.navigate('Settings')} style={styles.settingsBtn}>
             <MaterialIcons name="settings" size={22} color={theme.accent} />
+          </Pressable>
+          <Pressable onPress={toggleHUD} style={styles.settingsBtn}>
+            <MaterialIcons name="fullscreen" size={22} color={theme.fgTertiary} />
           </Pressable>
         </View>
       </View>
@@ -1759,6 +1818,37 @@ export default function ChatScreen({ navigation, route }) {
         </Animated.View>
       )}
 
+      {/* Smart quick-reply suggestion chips */}
+      {(suggestionsLoading || suggestions.length > 0) && (
+        <Animated.View style={[sugStyles.row, { opacity: suggestionsLoading ? 0.4 : suggestionsAnim }]}>
+          {suggestionsLoading ? (
+            [0, 1, 2].map(i => (
+              <View key={i} style={[sugStyles.chip, sugStyles.chipPlaceholder]} />
+            ))
+          ) : (
+            suggestions.map((label, i) => (
+              <Pressable
+                key={i}
+                onPress={() => {
+                  dismissSuggestions();
+                  setShowKeyboard(false);
+                  handleSend(label);
+                }}
+                style={({ pressed }) => [
+                  sugStyles.chip,
+                  {
+                    borderColor: theme.accent,
+                    backgroundColor: pressed ? theme.accent + '28' : theme.accent + '12',
+                  },
+                ]}
+              >
+                <Text style={[sugStyles.chipText, { color: theme.accent }]} numberOfLines={1}>{label}</Text>
+              </Pressable>
+            ))
+          )}
+        </Animated.View>
+      )}
+
       {/* Session summary banner */}
       {showSummaryBanner && (
         <View style={styles.summaryBannerBar}>
@@ -1970,6 +2060,86 @@ export default function ChatScreen({ navigation, route }) {
           </View>
         </View>
       </Modal>
+
+      <StatusBar hidden={hudMode} />
+
+      {/* HUD Mode Overlay */}
+      {hudMode && (
+        <Animated.View
+          style={[
+            hudStyles.overlay,
+            { opacity: hudAnim },
+          ]}
+          pointerEvents="box-none"
+        >
+          {/* Top status row */}
+          <View style={hudStyles.topRow}>
+            <View style={[hudStyles.connDot, { backgroundColor: connected ? '#4ade80' : '#f87171' }]} />
+            <Text style={hudStyles.topText}>
+              {new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+            </Text>
+            <Text style={hudStyles.topText}>
+              {isListening ? 'Listening' : isSpeaking ? 'Speaking' : isProcessing ? 'Thinking' : 'Standby'}
+            </Text>
+            <Pressable onPress={toggleHUD} style={hudStyles.closeBtn}>
+              <MaterialIcons name="close" size={20} color="rgba(255,255,255,0.6)" />
+            </Pressable>
+          </View>
+
+          {/* Center pulse rings */}
+          <View style={hudStyles.centerArea}>
+            <View style={hudStyles.ringsWrapper}>
+              <HUDPulse active={isListening || isSpeaking} color={isNoteMode ? '#22c55e' : theme.accent} />
+            </View>
+
+            {/* Live transcription */}
+            <Text style={hudStyles.transcriptText} numberOfLines={4}>
+              {isListening
+                ? (transcript && transcript.trim() ? transcript : 'Listening...')
+                : ''}
+            </Text>
+
+            {/* Last Captain response */}
+            {(() => {
+              const lastAssistant = [...messages].reverse().find(m => !m.isUser && m.text);
+              return lastAssistant ? (
+                <Text style={hudStyles.captainText} numberOfLines={2}>
+                  {lastAssistant.text}
+                </Text>
+              ) : null;
+            })()}
+          </View>
+
+          {/* Bottom mic button */}
+          <View style={hudStyles.bottomArea}>
+            <Pressable
+              onPressIn={handleMicPressIn}
+              onPressOut={handleMicPressOut}
+              disabled={isProcessing}
+              style={[
+                hudStyles.hudMicBtn,
+                {
+                  backgroundColor: isListening
+                    ? (isNoteMode ? '#22c55e' : theme.accent)
+                    : isSpeaking
+                    ? theme.accent + 'cc'
+                    : 'rgba(255,255,255,0.1)',
+                  borderColor: isListening || isSpeaking ? theme.accent : 'rgba(255,255,255,0.25)',
+                },
+              ]}
+            >
+              <MaterialIcons
+                name={isSpeaking ? 'volume-up' : isListening ? 'mic' : 'mic-none'}
+                size={34}
+                color={isListening || isSpeaking ? '#fff' : 'rgba(255,255,255,0.7)'}
+              />
+            </Pressable>
+            <Text style={hudStyles.micHint}>
+              {isProcessing ? 'Processing...' : isListening ? 'Tap to stop' : isSpeaking ? 'Tap to stop' : 'Tap to speak'}
+            </Text>
+          </View>
+        </Animated.View>
+      )}
     </KeyboardAvoidingView>
   );
 }
@@ -2063,6 +2233,13 @@ const styles = StyleSheet.create({
     borderRadius: 8, borderWidth: 1,
   },
   modeBadgeText: { fontSize: 11, fontWeight: '600' },
+  langBadge: {
+    paddingHorizontal: 7, paddingVertical: 3,
+    borderRadius: 6, borderWidth: 1,
+    backgroundColor: 'rgba(99,102,241,0.14)',
+    borderColor: 'rgba(99,102,241,0.35)',
+  },
+  langBadgeText: { fontSize: 11, fontWeight: '700', color: '#818cf8', letterSpacing: 0.5 },
   conversation: { flex: 1 },
   conversationContent: { paddingVertical: 8, flexGrow: 1 },
   emptyState: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 40 },
@@ -2370,4 +2547,117 @@ const taskStyles = StyleSheet.create({
   },
   summaryBannerBtnText: { color: '#fff', fontSize: 12, fontWeight: '700' },
   summaryBannerDismiss: { padding: 2 },
+});
+
+const sugStyles = StyleSheet.create({
+  row: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginHorizontal: 16,
+    marginBottom: 8,
+    justifyContent: 'center',
+  },
+  chip: {
+    paddingHorizontal: 14,
+    paddingVertical: 7,
+    borderRadius: 18,
+    borderWidth: 1,
+    maxWidth: 200,
+  },
+  chipPlaceholder: {
+    width: 100,
+    height: 32,
+    backgroundColor: 'rgba(128,128,128,0.15)',
+    borderColor: 'rgba(128,128,128,0.2)',
+  },
+  chipText: {
+    fontSize: 13,
+    fontWeight: '500',
+  },
+});
+
+const hudStyles = StyleSheet.create({
+  overlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 1000,
+    backgroundColor: '#080c12',
+    flexDirection: 'column',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingTop: 52,
+    paddingBottom: 52,
+    paddingHorizontal: 24,
+  },
+  topRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    width: '100%',
+  },
+  connDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+  },
+  topText: {
+    color: 'rgba(255,255,255,0.45)',
+    fontSize: 12,
+    fontWeight: '500',
+  },
+  closeBtn: {
+    marginLeft: 'auto',
+    padding: 8,
+  },
+  centerArea: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: '100%',
+    gap: 28,
+  },
+  ringsWrapper: {
+    width: 240,
+    height: 240,
+    justifyContent: 'center',
+    alignItems: 'center',
+    transform: [{ scale: 3 }],
+  },
+  transcriptText: {
+    color: '#ffffff',
+    fontSize: 20,
+    fontStyle: 'italic',
+    textAlign: 'center',
+    lineHeight: 30,
+    paddingHorizontal: 16,
+    minHeight: 32,
+  },
+  captainText: {
+    color: 'rgba(255,255,255,0.75)',
+    fontSize: 14,
+    textAlign: 'center',
+    lineHeight: 22,
+    paddingHorizontal: 24,
+  },
+  bottomArea: {
+    alignItems: 'center',
+    gap: 14,
+  },
+  hudMicBtn: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    borderWidth: 1.5,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  micHint: {
+    color: 'rgba(255,255,255,0.4)',
+    fontSize: 12,
+    fontWeight: '500',
+  },
 });

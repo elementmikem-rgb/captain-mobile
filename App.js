@@ -7,6 +7,7 @@ import ChatScreen from './screens/ChatScreen';
 import SettingsScreen from './screens/SettingsScreen';
 import ActionsScreen from './screens/ActionsScreen';
 import InsightsScreen from './screens/InsightsScreen';
+import ActivityLogScreen from './screens/ActivityLogScreen';
 import OnboardingScreen from './screens/OnboardingScreen';
 import { ThemeProvider, useTheme } from './context/ThemeContext';
 
@@ -79,6 +80,16 @@ function AppNavigator() {
             name="Insights"
             component={InsightsScreen}
             options={{ headerShown: false }}
+          />
+          <Stack.Screen
+            name="ActivityLog"
+            component={ActivityLogScreen}
+            options={{
+              title: "Captain's Log",
+              headerStyle: { backgroundColor: theme.bg },
+              headerTintColor: theme.fgPrimary,
+              headerShadowVisible: false,
+            }}
           />
         </Stack.Navigator>
       </NavigationContainer>
