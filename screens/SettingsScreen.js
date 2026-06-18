@@ -40,9 +40,24 @@ const DEFAULT_SETTINGS = {
 };
 
 const PERSONALITIES = [
-  { key: 'professional', icon: 'business-center', label: 'Professional', desc: 'Formal, detailed', formality: 'formal', humor: 'none', verbosity: 'detailed' },
-  { key: 'casual',       icon: 'chat-bubble-outline', label: 'Casual',   desc: 'Friendly, concise', formality: 'casual', humor: 'light', verbosity: 'concise' },
-  { key: 'wit',          icon: 'mood',             label: 'Wit',         desc: 'Clever, Jarvis-style', formality: 'casual', humor: 'witty', verbosity: 'concise' },
+  {
+    key: 'professional',
+    icon: 'business-center',
+    label: 'Professional',
+    example: '"Understood, sir. I\'ll handle that."',
+  },
+  {
+    key: 'casual',
+    icon: 'chat-bubble-outline',
+    label: 'Casual',
+    example: '"Got it! On it."',
+  },
+  {
+    key: 'direct',
+    icon: 'flash-on',
+    label: 'Direct',
+    example: '"Done."',
+  },
 ];
 
 const MODES = [
@@ -78,7 +93,7 @@ function ThemeSwatch({ colorKey, isSelected, onPress, isDark }) {
   );
 }
 
-export default function SettingsScreen() {
+export default function SettingsScreen({ navigation }) {
   const { theme, colorKey, mode, setColorKey, setMode, isDark } = useTheme();
   const [apiUrl, setApiUrl] = useState('https://callova.live/captain');
   const [apiKey, setApiKey] = useState('');
@@ -187,7 +202,7 @@ export default function SettingsScreen() {
       await fetch(`${baseUrl}/api/personality`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-API-Key': key },
-        body: JSON.stringify({ formality: p.formality, humor: p.humor, verbosity: p.verbosity }),
+        body: JSON.stringify({ mode: personalityKey }),
       });
     } catch {}
   };
@@ -299,7 +314,7 @@ export default function SettingsScreen() {
                 <Text style={[styles.personalityLabel, { color: active ? theme.accent : theme.fgSecondary }]}>
                   {p.label}
                 </Text>
-                <Text style={[styles.personalityDesc, { color: theme.fgTertiary }]}>{p.desc}</Text>
+                <Text style={[styles.personalityDesc, { color: theme.fgTertiary }]}>{p.example}</Text>
               </Pressable>
             );
           })}
@@ -392,6 +407,30 @@ export default function SettingsScreen() {
             })}
           </View>
         </View>
+      </View>
+
+      {/* ── Macros ── */}
+      <View style={s()}>
+        <Text style={[styles.sectionTitle, { color: theme.accent }]}>Macros</Text>
+        <Text style={[styles.subLabel, { color: theme.fgTertiary }]}>Say any trigger phrase to activate a macro</Text>
+        {[
+          { name: 'Morning Mode',  icon: 'wb-sunny',            triggers: '"morning mode"  or  "start my day"',  desc: 'Opens briefing, ambient ON, speed 1.0x' },
+          { name: 'Focus Mode',    icon: 'center-focus-strong', triggers: '"focus mode"  or  "heads down"',      desc: 'Whisper ON, ambient OFF' },
+          { name: 'Drive Mode',    icon: 'directions-car',      triggers: '"drive mode"  or  "driving"',         desc: 'Drive ON, ambient ON, speed 0.85x' },
+          { name: 'End of Day',    icon: 'nights-stay',         triggers: '"end of day"  or  "wrap up"',         desc: 'Ambient OFF, drive OFF, prompts reflection' },
+          { name: 'Status Check',  icon: 'radar',               triggers: '"status check"',                      desc: 'Fires your daily briefing' },
+        ].map(macro => (
+          <View key={macro.name} style={[styles.macroCard, { backgroundColor: theme.inputBg, borderColor: theme.divider }]}>
+            <View style={[styles.macroIconWrap, { backgroundColor: theme.accent + '18' }]}>
+              <MaterialIcons name={macro.icon} size={18} color={theme.accent} />
+            </View>
+            <View style={styles.macroBody}>
+              <Text style={[styles.macroName, { color: theme.fgSecondary }]}>{macro.name}</Text>
+              <Text style={[styles.macroTrigger, { color: theme.accent }]}>{macro.triggers}</Text>
+              <Text style={[styles.macroDesc, { color: theme.fgTertiary }]}>{macro.desc}</Text>
+            </View>
+          </View>
+        ))}
       </View>
 
       {/* ── Notifications ── */}
@@ -500,6 +539,19 @@ export default function SettingsScreen() {
             {updateStatus}
           </Text>
         ) : null}
+      </View>
+
+      {/* ── Intelligence Report ── */}
+      <View style={s()}>
+        <Text style={[styles.sectionTitle, { color: theme.accent }]}>Reports</Text>
+        <Pressable
+          onPress={() => navigation.navigate('Insights')}
+          style={[styles.integrationBtn, { backgroundColor: theme.inputBg }]}
+        >
+          <MaterialIcons name="insights" size={18} color={theme.accent} />
+          <Text style={[styles.integrationText, { color: theme.fgSecondary }]}>Intelligence Report</Text>
+          <MaterialIcons name="chevron-right" size={18} color={theme.fgTertiary} />
+        </Pressable>
       </View>
 
       {/* ── Data ── */}
@@ -678,4 +730,20 @@ const styles = StyleSheet.create({
   },
   aboutLabel: { fontSize: 14 },
   aboutValue: { fontSize: 14 },
+
+  macroCard: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: 12,
+    borderRadius: 12, borderWidth: 1,
+    paddingHorizontal: 14, paddingVertical: 12,
+    marginBottom: 8,
+  },
+  macroIconWrap: {
+    width: 36, height: 36, borderRadius: 10,
+    justifyContent: 'center', alignItems: 'center',
+    flexShrink: 0,
+  },
+  macroBody: { flex: 1, gap: 2 },
+  macroName: { fontSize: 13, fontWeight: '700' },
+  macroTrigger: { fontSize: 12, fontWeight: '500', fontStyle: 'italic' },
+  macroDesc: { fontSize: 11, marginTop: 2 },
 });

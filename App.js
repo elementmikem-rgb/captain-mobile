@@ -5,6 +5,7 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import ChatScreen from './screens/ChatScreen';
 import SettingsScreen from './screens/SettingsScreen';
 import ActionsScreen from './screens/ActionsScreen';
+import InsightsScreen from './screens/InsightsScreen';
 import { ThemeProvider, useTheme } from './context/ThemeContext';
 
 const Stack = createNativeStackNavigator();
@@ -53,6 +54,11 @@ function AppNavigator() {
               headerTintColor: theme.fgPrimary,
               headerShadowVisible: false,
             }}
+          />
+          <Stack.Screen
+            name="Insights"
+            component={InsightsScreen}
+            options={{ headerShown: false }}
           />
         </Stack.Navigator>
       </NavigationContainer>

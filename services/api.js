@@ -281,6 +281,16 @@ export async function getDailySummary() {
   return response.data;
 }
 
+export async function recallMemory(query) {
+  const c = await getClient();
+  try {
+    const response = await c.post('/api/recall', { query });
+    return response.data;
+  } catch {
+    return { summary: '' };
+  }
+}
+
 export async function sendVision(imageBase64, mimeType, prompt) {
   let url = await AsyncStorage.getItem('captain_api_url') || DEFAULT_URL;
   if (url.includes('192.168.')) { url = DEFAULT_URL; }

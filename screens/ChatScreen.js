@@ -21,7 +21,7 @@ import ConversationItem from '../components/ConversationItem';
 import MicButton from '../components/MicButton';
 import Waveform from '../components/Waveform';
 import { useTheme } from '../context/ThemeContext';
-import { sendMessage, sendMessageStream, sendFeedback, testConnection, getBriefing, getDailyBriefingStructured, registerPushToken, sendVision, getBookingsToday, getWeather, addReminder, addMemory } from '../services/api';
+import { sendMessage, sendMessageStream, sendFeedback, testConnection, getBriefing, getDailyBriefingStructured, registerPushToken, sendVision, getBookingsToday, getWeather, addReminder, addMemory, recallMemory } from '../services/api';
 import {
   requestPermissions,
   startListening,
@@ -156,7 +156,7 @@ export default function ChatScreen({ navigation }) {
   const [textInput, setTextInput] = useState('');
   const [showKeyboard, setShowKeyboard] = useState(false);
   const [activeMode, setActiveMode] = useState(null);
-  const [appSettings, setAppSettings] = useState({ driveMode: false, whisperMode: false, meetingMode: false, ambientMode: false, voiceSpeed: 1.0 });
+  const [appSettings, setAppSettings] = useState({ driveMode: false, whisperMode: false, meetingMode: false, ambientMode: false, voiceSpeed: 1.0, personality: 'casual' });
   const [pendingImage, setPendingImage] = useState(null);
   const [streamingMsgId, setStreamingMsgId] = useState(null);
   const [connected, setConnected] = useState(null);
@@ -164,6 +164,7 @@ export default function ChatScreen({ navigation }) {
   const [quickReminder, setQuickReminder] = useState(null);
   const [notedFact, setNotedFact] = useState(null);
   const [contextChips, setContextChips] = useState([]);
+  const [searchingMemory, setSearchingMemory] = useState(false);
   const chipAnim = useRef(new Animated.Value(0)).current;
   const chipDismissTimer = useRef(null);
   const scrollViewRef = useRef(null);
@@ -221,6 +222,7 @@ export default function ChatScreen({ navigation }) {
           meetingMode: !!parsed.meetingMode,
           ambientMode: !!parsed.ambientMode,
           voiceSpeed: parsed.voiceSpeed || 1.0,
+          personality: parsed.personality || 'casual',
         });
       }
     } catch {}
@@ -376,8 +378,115 @@ export default function ChatScreen({ navigation }) {
     }
   }, []);
 
+  // ── Smart Macros ────────────────────────────────────────────────────────────
+  const MACROS = [
+    {
+      name: 'Morning Mode',
+      triggers: ['morning mode', 'start my day'],
+      action: async () => {
+        const saved = await AsyncStorage.getItem('captain_settings');
+        const current = saved ? JSON.parse(saved) : {};
+        const updated = { ...current, ambientMode: true, voiceSpeed: 1.0 };
+        await AsyncStorage.setItem('captain_settings', JSON.stringify(updated));
+        setAppSettings(prev => ({ ...prev, ambientMode: true, voiceSpeed: 1.0 }));
+        return { navigate: 'Briefing', confirmText: null };
+      },
+    },
+    {
+      name: 'Focus Mode',
+      triggers: ['focus mode', 'heads down'],
+      action: async () => {
+        const saved = await AsyncStorage.getItem('captain_settings');
+        const current = saved ? JSON.parse(saved) : {};
+        const updated = { ...current, whisperMode: true, ambientMode: false };
+        await AsyncStorage.setItem('captain_settings', JSON.stringify(updated));
+        setAppSettings(prev => ({ ...prev, whisperMode: true, ambientMode: false }));
+        return { confirmText: 'Focus mode on. Voice muted, ambient off.' };
+      },
+    },
+    {
+      name: 'Drive Mode',
+      triggers: ['drive mode', 'driving'],
+      action: async () => {
+        const saved = await AsyncStorage.getItem('captain_settings');
+        const current = saved ? JSON.parse(saved) : {};
+        const updated = { ...current, driveMode: true, ambientMode: true, voiceSpeed: 0.85 };
+        await AsyncStorage.setItem('captain_settings', JSON.stringify(updated));
+        setAppSettings(prev => ({ ...prev, driveMode: true, ambientMode: true, voiceSpeed: 0.85 }));
+        return { confirmText: "Drive mode activated. I'll keep it brief." };
+      },
+    },
+    {
+      name: 'End of Day',
+      triggers: ['end of day', 'wrap up'],
+      action: async () => {
+        const saved = await AsyncStorage.getItem('captain_settings');
+        const current = saved ? JSON.parse(saved) : {};
+        const updated = { ...current, ambientMode: false, driveMode: false };
+        await AsyncStorage.setItem('captain_settings', JSON.stringify(updated));
+        setAppSettings(prev => ({ ...prev, ambientMode: false, driveMode: false }));
+        return { syntheticMessage: 'How did today go? Give me a moment to reflect on my day.' };
+      },
+    },
+    {
+      name: 'Status Check',
+      triggers: ['status check'],
+      action: async () => {
+        return { syntheticMessage: 'My daily briefing' };
+      },
+    },
+  ];
+
+  const checkMacro = useCallback((text) => {
+    const lower = text.trim().toLowerCase();
+    return MACROS.find(m => m.triggers.some(t => lower === t));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const handleSend = useCallback(async (userText, imagePayload = null) => {
     if (inFlightRef.current) return;
+
+    // ── Macro detection (voice shortcuts) ───────────────────────────────────
+    if (!imagePayload && userText) {
+      const macro = checkMacro(userText);
+      if (macro) {
+        const result = await macro.action();
+        if (result.confirmText) {
+          const confirmMsg = { id: Date.now(), text: result.confirmText, isUser: false, modelUsed: 'Macro', ts: Date.now() };
+          setMessages(prev => {
+            const next = [...prev, confirmMsg];
+            AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(next)).catch(() => {});
+            return next;
+          });
+          const willSpeak = !appSettings.whisperMode && !appSettings.meetingMode;
+          if (willSpeak) {
+            try {
+              const s = await AsyncStorage.getItem('captain_settings');
+              const voiceEnabled = s ? JSON.parse(s).voiceEnabled !== false : true;
+              if (voiceEnabled) {
+                setIsSpeaking(true);
+                await speak(result.confirmText, appSettings.voiceSpeed);
+                setIsSpeaking(false);
+              }
+            } catch {}
+          }
+          return;
+        }
+        if (result.navigate) {
+          // navigate to briefing tab then fall through to fire briefing message
+          try { navigation.navigate(result.navigate); } catch {}
+          // fall through intentionally — let briefing trigger handle the message
+          userText = 'My daily briefing';
+        } else if (result.syntheticMessage) {
+          userText = result.syntheticMessage;
+          // fall through to send as normal message
+        } else {
+          return;
+        }
+      }
+    }
+    // ────────────────────────────────────────────────────────────────────────
+
     inFlightRef.current = true;
     setIsProcessing(true);
     setTranscript('');
@@ -391,6 +500,7 @@ export default function ChatScreen({ navigation }) {
     const opts = {
       chatMode: activeMode,
       driveMode: appSettings.driveMode || activeMode === 'drive',
+      personality: appSettings.personality || 'casual',
     };
 
     if (!imagePayload && userText) {
@@ -441,6 +551,25 @@ export default function ChatScreen({ navigation }) {
           userText = `Here is today's briefing data: Date: ${briefData.date}. Weather: ${weatherStr}. Bookings: ${bookingStr}. Reminders: ${reminderStr}. Please present this as my daily briefing in your Jarvis style.`;
         } catch {
           // If structured briefing fetch fails, continue with original message
+        }
+      }
+    }
+
+    // Recall trigger — inject past conversation context when Mike references previous sessions
+    const RECALL_PATTERNS = [/remember when/i, /last time/i, /you mentioned/i, /didn't you say/i, /do you recall/i];
+    if (!imagePayload && userText) {
+      const isRecallRequest = RECALL_PATTERNS.some(re => re.test(userText));
+      if (isRecallRequest) {
+        setSearchingMemory(true);
+        try {
+          const recallData = await recallMemory(userText);
+          if (recallData.summary) {
+            userText = `[CONVERSATION HISTORY FOR CONTEXT]\n${recallData.summary}\n\n[CURRENT MESSAGE]\n${userText}`;
+          }
+        } catch {
+          // If recall fails, continue with original message
+        } finally {
+          setSearchingMemory(false);
         }
       }
     }
@@ -754,6 +883,14 @@ export default function ChatScreen({ navigation }) {
         {isProcessing && <ThinkingDots color={theme.accent} />}
       </ScrollView>
 
+      {/* Searching memory indicator */}
+      {searchingMemory && (
+        <View style={styles.searchingMemoryBar}>
+          <MaterialIcons name="history" size={14} color="#94a3b8" />
+          <Text style={styles.searchingMemoryText}>Searching memory...</Text>
+        </View>
+      )}
+
       {/* Noted badge — memory stored */}
       {notedFact && (
         <View style={styles.notedBar}>
@@ -960,6 +1097,14 @@ const styles = StyleSheet.create({
   },
   quickReminderBtnText: { color: '#fff', fontSize: 12, fontWeight: '700' },
   quickReminderDismiss: { padding: 2 },
+  searchingMemoryBar: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    marginHorizontal: 16, marginBottom: 6,
+    paddingHorizontal: 12, paddingVertical: 6,
+    backgroundColor: 'rgba(148, 163, 184, 0.06)',
+    borderRadius: 8, borderWidth: 1, borderColor: 'rgba(148, 163, 184, 0.12)',
+  },
+  searchingMemoryText: { color: '#94a3b8', fontSize: 12, fontStyle: 'italic' },
   notedBar: {
     flexDirection: 'row', alignItems: 'center', gap: 8,
     marginHorizontal: 16, marginBottom: 8,

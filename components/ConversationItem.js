@@ -17,6 +17,139 @@ function formatTime(ts) {
   return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
+// --- Card detection helpers ---
+
+function extractLine(text, label) {
+  const re = new RegExp(label + '[:\\s]+(.+)', 'i');
+  const m = text.match(re);
+  return m ? m[1].trim() : null;
+}
+
+function detectWeatherCard(msg) {
+  if (!msg.includes('Temperature:') || !msg.includes('Condition:')) return null;
+  const temp = extractLine(msg, 'Temperature');
+  const condition = extractLine(msg, 'Condition');
+  const wind = extractLine(msg, 'Wind');
+  if (!temp || !condition) return null;
+  return { type: 'weather', temp, condition, wind };
+}
+
+function detectExpenseCard(msg) {
+  const isExpense = /Expense logged:|Added expense:/i.test(msg);
+  if (!isExpense) return null;
+  const amount = msg.match(/\$[\d,]+(\.\d{2})?/);
+  const category = extractLine(msg, 'Category');
+  const description = extractLine(msg, 'Description') || extractLine(msg, 'For');
+  return { type: 'expense', amount: amount ? amount[0] : null, category, description };
+}
+
+function detectReminderCard(msg) {
+  if (!/Reminder set:|I've set a reminder|I have set a reminder/i.test(msg)) return null;
+  const timeMatch = msg.match(/\b(\d{1,2}:\d{2}\s*(?:am|pm)?)/i);
+  const dateMatch = msg.match(/\b(tomorrow|today|monday|tuesday|wednesday|thursday|friday|saturday|sunday|\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)/i);
+  const reminderText = msg.replace(/Reminder set:|I've set a reminder|I have set a reminder/gi, '').replace(/\./g, '').trim();
+  return { type: 'reminder', text: reminderText, time: timeMatch ? timeMatch[0] : null, date: dateMatch ? dateMatch[0] : null };
+}
+
+function detectBookingCard(msg) {
+  const hasBooking = /booking/i.test(msg);
+  const timeMatch = msg.match(/\b\d{1,2}:\d{2}\s*(?:am|pm)?/i);
+  if (!hasBooking || !timeMatch) return null;
+  const nameMatch = msg.match(/(?:for|with)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)/);
+  return { type: 'booking', time: timeMatch[0], customer: nameMatch ? nameMatch[1] : null };
+}
+
+function detectCard(msg) {
+  if (!msg || typeof msg !== 'string') return null;
+  return (
+    detectWeatherCard(msg) ||
+    detectExpenseCard(msg) ||
+    detectReminderCard(msg) ||
+    detectBookingCard(msg) ||
+    null
+  );
+}
+
+function weatherEmoji(condition) {
+  const c = condition.toLowerCase();
+  if (/sunny|clear/.test(c)) return '';
+  if (/cloud|overcast/.test(c)) return '';
+  if (/rain|shower|drizzle/.test(c)) return '';
+  if (/snow|blizzard/.test(c)) return '';
+  if (/thunder|storm/.test(c)) return '';
+  if (/fog|mist/.test(c)) return '';
+  if (/wind/.test(c)) return '';
+  return '';
+}
+
+// --- Card render components ---
+
+function WeatherCard({ data, theme }) {
+  return (
+    <View style={cardStyles.weatherCard}>
+      <View style={cardStyles.weatherTop}>
+        <Text style={cardStyles.weatherEmoji}>{weatherEmoji(data.condition)}</Text>
+        <Text style={cardStyles.weatherTemp}>{data.temp}</Text>
+      </View>
+      <Text style={cardStyles.weatherCondition}>{data.condition}</Text>
+      {data.wind ? (
+        <Text style={cardStyles.weatherWind}>Wind: {data.wind}</Text>
+      ) : null}
+    </View>
+  );
+}
+
+function ExpenseCard({ data, theme }) {
+  return (
+    <View style={cardStyles.expenseCard}>
+      <View style={cardStyles.expenseRow}>
+        <MaterialIcons name="receipt" size={22} color="#4ade80" />
+        {data.amount ? (
+          <Text style={cardStyles.expenseAmount}>{data.amount}</Text>
+        ) : null}
+      </View>
+      {data.category ? (
+        <View style={cardStyles.categoryChip}>
+          <Text style={cardStyles.categoryText}>{data.category}</Text>
+        </View>
+      ) : null}
+      {data.description ? (
+        <Text style={cardStyles.expenseDesc}>{data.description}</Text>
+      ) : null}
+    </View>
+  );
+}
+
+function ReminderCard({ data, theme }) {
+  return (
+    <View style={cardStyles.reminderCard}>
+      <MaterialIcons name="alarm" size={28} color="#fbbf24" style={cardStyles.reminderIcon} />
+      <Text style={cardStyles.reminderText}>{data.text}</Text>
+      {(data.time || data.date) ? (
+        <Text style={cardStyles.reminderDue}>
+          {[data.date, data.time].filter(Boolean).join(' at ')}
+        </Text>
+      ) : null}
+    </View>
+  );
+}
+
+function BookingCard({ data, theme }) {
+  return (
+    <View style={cardStyles.bookingCard}>
+      <View style={cardStyles.bookingRow}>
+        <MaterialIcons name="event" size={26} color="#818cf8" />
+        <View style={cardStyles.bookingInfo}>
+          {data.customer ? (
+            <Text style={cardStyles.bookingCustomer}>{data.customer}</Text>
+          ) : null}
+          <Text style={cardStyles.bookingTime}>{data.time}</Text>
+        </View>
+      </View>
+    </View>
+  );
+}
+
 export default function ConversationItem({ message, isUser, onFeedback, interactionId, modelUsed, complexity, isStreaming, timestamp }) {
   const { theme } = useTheme();
   const [feedbackGiven, setFeedbackGiven] = useState(null);
@@ -65,6 +198,8 @@ export default function ConversationItem({ message, isUser, onFeedback, interact
     onFeedback(interactionId, helpful);
   };
 
+  const card = !isUser ? detectCard(message) : null;
+
   return (
     <Pressable
       onLongPress={handleLongPress}
@@ -73,7 +208,11 @@ export default function ConversationItem({ message, isUser, onFeedback, interact
         styles.container,
         isUser
           ? [styles.userMessage, { backgroundColor: theme.userBubble }]
-          : [styles.captainMessage, { backgroundColor: theme.captainBubble, borderColor: theme.captainBorder }],
+          : [
+              styles.captainMessage,
+              card ? styles.cardContainer : null,
+              !card ? { backgroundColor: theme.captainBubble, borderColor: theme.captainBorder } : null,
+            ],
       ]}
     >
       {copied && (
@@ -81,16 +220,25 @@ export default function ConversationItem({ message, isUser, onFeedback, interact
           <Text style={styles.copiedText}>Saved</Text>
         </View>
       )}
-      <View style={styles.messageContent}>
-        <Text style={[styles.messageText, { color: isUser ? '#fff' : theme.fgSecondary }]}>
-          {message}
-        </Text>
-        {isStreaming && !isUser && (
-          <Animated.Text style={[styles.cursor, { color: theme.accent, opacity: cursorOpacity }]}>
-            │
-          </Animated.Text>
-        )}
-      </View>
+      {card ? (
+        <>
+          {card.type === 'weather' && <WeatherCard data={card} theme={theme} />}
+          {card.type === 'expense' && <ExpenseCard data={card} theme={theme} />}
+          {card.type === 'reminder' && <ReminderCard data={card} theme={theme} />}
+          {card.type === 'booking' && <BookingCard data={card} theme={theme} />}
+        </>
+      ) : (
+        <View style={styles.messageContent}>
+          <Text style={[styles.messageText, { color: isUser ? '#fff' : theme.fgSecondary }]}>
+            {message}
+          </Text>
+          {isStreaming && !isUser && (
+            <Animated.Text style={[styles.cursor, { color: theme.accent, opacity: cursorOpacity }]}>
+              │
+            </Animated.Text>
+          )}
+        </View>
+      )}
 
       {timestamp ? (
         <Text style={[styles.timestamp, { color: isUser ? 'rgba(255,255,255,0.45)' : theme.fgTertiary }]}>
@@ -217,5 +365,141 @@ const styles = StyleSheet.create({
   },
   feedbackActiveBad: {
     backgroundColor: 'rgba(248, 113, 113, 0.1)',
+  },
+  cardContainer: {
+    backgroundColor: 'transparent',
+    borderColor: 'transparent',
+    paddingHorizontal: 0,
+    paddingVertical: 0,
+  },
+});
+
+const cardStyles = StyleSheet.create({
+  // Weather card
+  weatherCard: {
+    backgroundColor: 'rgba(56, 112, 200, 0.18)',
+    borderRadius: 16,
+    padding: 16,
+    minWidth: 180,
+  },
+  weatherTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 4,
+  },
+  weatherEmoji: {
+    fontSize: 36,
+  },
+  weatherTemp: {
+    fontSize: 32,
+    fontWeight: '700',
+    color: '#e0eaff',
+  },
+  weatherCondition: {
+    fontSize: 15,
+    color: '#c7d7f7',
+    fontWeight: '500',
+    marginBottom: 4,
+  },
+  weatherWind: {
+    fontSize: 12,
+    color: '#a0b4d8',
+    marginTop: 2,
+  },
+
+  // Expense card
+  expenseCard: {
+    backgroundColor: 'rgba(74, 222, 128, 0.08)',
+    borderRadius: 14,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(74, 222, 128, 0.25)',
+    minWidth: 160,
+  },
+  expenseRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 6,
+  },
+  expenseAmount: {
+    fontSize: 24,
+    fontWeight: '700',
+    color: '#4ade80',
+  },
+  categoryChip: {
+    alignSelf: 'flex-start',
+    backgroundColor: 'rgba(74, 222, 128, 0.15)',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 3,
+    marginBottom: 6,
+  },
+  categoryText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#4ade80',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  expenseDesc: {
+    fontSize: 13,
+    color: '#a7c5a7',
+  },
+
+  // Reminder card
+  reminderCard: {
+    backgroundColor: 'rgba(251, 191, 36, 0.08)',
+    borderRadius: 14,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(251, 191, 36, 0.25)',
+    minWidth: 180,
+    alignItems: 'flex-start',
+  },
+  reminderIcon: {
+    marginBottom: 6,
+  },
+  reminderText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#fde68a',
+    marginBottom: 4,
+    flexShrink: 1,
+  },
+  reminderDue: {
+    fontSize: 12,
+    color: '#d4a908',
+    marginTop: 2,
+  },
+
+  // Booking card
+  bookingCard: {
+    backgroundColor: 'rgba(129, 140, 248, 0.1)',
+    borderRadius: 14,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(129, 140, 248, 0.25)',
+    minWidth: 180,
+  },
+  bookingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  bookingInfo: {
+    flexShrink: 1,
+  },
+  bookingCustomer: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#c7d2fe',
+    marginBottom: 2,
+  },
+  bookingTime: {
+    fontSize: 13,
+    color: '#a5b4fc',
+    fontWeight: '500',
   },
 });
