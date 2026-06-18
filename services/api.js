@@ -37,6 +37,7 @@ export async function sendMessage(message, opts = {}) {
       context: 'voice',
       chatMode: opts.chatMode || null,
       driveMode: opts.driveMode || false,
+      ...(opts.location ? { lat: opts.location.lat, lon: opts.location.lon, city: opts.location.city || null } : {}),
     });
     return response.data;
   } catch (error) {
@@ -128,6 +129,7 @@ export async function sendMessageStream(message, onChunk, onMeta, onDone, opts =
       message,
       chatMode: opts.chatMode || null,
       driveMode: opts.driveMode || false,
+      ...(opts.location ? { lat: opts.location.lat, lon: opts.location.lon, city: opts.location.city || null } : {}),
     }),
   });
 
