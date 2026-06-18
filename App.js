@@ -20,7 +20,7 @@ const Stack = createNativeStackNavigator();
 
 const SETTINGS_KEY = 'captain_settings';
 
-function LockScreen({ onUnlock, biometricType }) {
+function LockScreen({ onUnlock, biometricType, authUnavailable }) {
   const { theme } = useTheme();
   const [authFailed, setAuthFailed] = useState(false);
 
@@ -55,7 +55,10 @@ function LockScreen({ onUnlock, biometricType }) {
       </View>
       <Text style={lockStyles.title}>Captain is locked</Text>
       <Text style={[lockStyles.subtitle, { color: theme.accent + 'cc' }]}>{typeLabel}</Text>
-      {authFailed && (
+      {authUnavailable && (
+        <Text style={lockStyles.errorText}>Biometrics unavailable on this device. Disable Biometric Lock in Settings to proceed.</Text>
+      )}
+      {authFailed && !authUnavailable && (
         <Text style={lockStyles.errorText}>Authentication failed. Try again.</Text>
       )}
       <Pressable
@@ -130,11 +133,16 @@ function AppNavigator() {
   const [isLocked, setIsLocked] = useState(false);
   const [biometricEnabled, setBiometricEnabled] = useState(false);
   const [biometricType, setBiometricType] = useState(null);
+  const [authUnavailable, setAuthUnavailable] = useState(false);
   const appStateRef = useRef(AppState.currentState);
 
   // Attempt biometric authentication
   const authenticate = useCallback(async () => {
-    if (!LocalAuthentication) { setIsLocked(false); return; }
+    if (!LocalAuthentication) {
+      // Module unavailable — leave locked, LockScreen shows retry
+      setAuthUnavailable(true);
+      return;
+    }
     try {
       const result = await LocalAuthentication.authenticateAsync({
         promptMessage: 'Unlock Captain',
@@ -145,7 +153,7 @@ function AppNavigator() {
       }
       // On failure we leave isLocked = true; LockScreen shows retry button
     } catch {
-      setIsLocked(false); // Fail open if biometrics error
+      // Leave locked; user can tap Unlock to retry
     }
   }, []);
 
@@ -206,7 +214,7 @@ function AppNavigator() {
 
   // Show lock screen if locked
   if (isLocked) {
-    return <LockScreen onUnlock={() => setIsLocked(false)} biometricType={biometricType} />;
+    return <LockScreen onUnlock={authenticate} biometricType={biometricType} authUnavailable={authUnavailable} />;
   }
 
   const navTheme = {
