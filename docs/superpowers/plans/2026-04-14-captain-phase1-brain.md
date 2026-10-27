@@ -1218,7 +1218,7 @@ Expected: JSON list of ElevenLabs voices (or empty with error if key not set yet
 
 ```bash
 cd /c/Users/Mike/captain-mobile
-EXPO_TOKEN=REMOVED-EXPO-TOKEN npx eas-cli build --platform android --profile preview --non-interactive
+EXPO_TOKEN=<your-expo-token> npx eas-cli build --platform android --profile preview --non-interactive
 ```
 
 - [ ] **Step 8: Commit any final adjustments**
